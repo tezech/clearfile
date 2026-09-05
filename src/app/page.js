@@ -33,17 +33,12 @@ export default function Home() {
           </div>
 
           <a href="/compress-image" className="block bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition">
-  <h2 className="text-lg font-semibold text-gray-900 mb-2">Compress Image</h2>
-  <p className="text-gray-600 text-sm mb-4">
-    Shrink JPG, PNG, and WebP files without visible quality loss.
-  </p>
-  <span className="text-blue-600 text-sm font-medium">Try it &rarr;</span>
-</a>
+            <h2 className="text-lg font-semibold text-gray-900 mb-2">Compress Image</h2>
             <p className="text-gray-600 text-sm mb-4">
               Shrink JPG, PNG, and WebP files without visible quality loss.
             </p>
-            <span className="text-blue-600 text-sm font-medium">Coming next &rarr;</span>
-          </div>
+            <span className="text-blue-600 text-sm font-medium">Try it &rarr;</span>
+          </a>
 
           <div className="bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition">
             <h2 className="text-lg font-semibold text-gray-900 mb-2">Convert Files</h2>
