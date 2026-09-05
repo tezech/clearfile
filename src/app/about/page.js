@@ -28,7 +28,7 @@ export default function About() {
 
           <h2 className="text-xl font-semibold text-gray-900 pt-4">Contact</h2>
           <p>
-            For questions, feedback, or issues: <span className="font-medium">[your email here]</span>
+            For questions, feedback, or issues: <span className="font-medium">[tezechno@gmail.com]</span>
           </p>
         </div>
       </section>
