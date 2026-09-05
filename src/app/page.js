@@ -65,9 +65,11 @@ export default function Home() {
         </div>
       </section>
 
-      <footer className="text-center text-sm text-gray-400 py-8">
-        &copy; {new Date().getFullYear()} ClearFile
-      </footer>
+       <footer className="text-center text-sm text-gray-400 py-8 space-x-4">
+        <span>&copy; {new Date().getFullYear()} ClearFile</span>
+        <a href="/about" className="hover:text-gray-600">About</a>
+        <a href="/privacy" className="hover:text-gray-600">Privacy</a>
+       </footer>
     </main>
   );
 }
