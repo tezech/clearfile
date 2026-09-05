@@ -1,7 +1,6 @@
 export default function Home() {
   return (
     <main className="min-h-screen bg-gray-50">
-      {/* Header */}
       <header className="border-b border-gray-200 bg-white">
         <div className="max-w-5xl mx-auto px-6 py-5 flex items-center justify-between">
           <span className="text-xl font-bold text-gray-900">ClearFile</span>
@@ -9,7 +8,6 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Hero */}
       <section className="max-w-5xl mx-auto px-6 pt-16 pb-12 text-center">
         <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-4">
           Compress and convert files.<br />Without giving up your privacy.
@@ -20,17 +18,16 @@ export default function Home() {
         </p>
       </section>
 
-      {/* Tool cards */}
       <section className="max-w-5xl mx-auto px-6 pb-20">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
 
-          <div className="bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition">
+          <a href="/compress-pdf" className="block bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition">
             <h2 className="text-lg font-semibold text-gray-900 mb-2">Compress PDF</h2>
             <p className="text-gray-600 text-sm mb-4">
               Reduce PDF file size while keeping quality intact.
             </p>
-            <span className="text-blue-600 text-sm font-medium">Coming next &rarr;</span>
-          </div>
+            <span className="text-blue-600 text-sm font-medium">Try it &rarr;</span>
+          </a>
 
           <a href="/compress-image" className="block bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition">
             <h2 className="text-lg font-semibold text-gray-900 mb-2">Compress Image</h2>
@@ -40,18 +37,17 @@ export default function Home() {
             <span className="text-blue-600 text-sm font-medium">Try it &rarr;</span>
           </a>
 
-          <div className="bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition">
+          <a href="/convert-files" className="block bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition">
             <h2 className="text-lg font-semibold text-gray-900 mb-2">Convert Files</h2>
             <p className="text-gray-600 text-sm mb-4">
-              Switch between JPG, PNG, WebP, PDF, and more.
+              Switch between JPG, PNG, WebP, and PDF.
             </p>
-            <span className="text-blue-600 text-sm font-medium">Coming next &rarr;</span>
-          </div>
+            <span className="text-blue-600 text-sm font-medium">Try it &rarr;</span>
+          </a>
 
         </div>
       </section>
 
-      {/* Trust section */}
       <section className="border-t border-gray-200 bg-white">
         <div className="max-w-5xl mx-auto px-6 py-16 grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
           <div>
@@ -69,7 +65,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Footer */}
       <footer className="text-center text-sm text-gray-400 py-8">
         &copy; {new Date().getFullYear()} ClearFile
       </footer>
