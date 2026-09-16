@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Clearfile</string>
+    <string name="title_activity_main">Clearfile</string>
+    <string name="package_name">com.tezech.clearfile</string>
+    <string name="custom_url_scheme">com.tezech.clearfile</string>
+</resources>
