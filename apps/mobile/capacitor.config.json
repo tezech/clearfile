@@ -1,0 +1,9 @@
+{
+  "appId": "com.tezech.clearfile",
+  "appName": "Clearfile",
+  "webDir": "out",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  }
+}

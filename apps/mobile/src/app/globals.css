@@ -1,0 +1,87 @@
+:root {
+  --bg-deep: #050608;
+  --card-surface: #0e1118;
+  --card-elevated: #151926;
+  --border-line: #1e2538;
+  --border-glow: #2b3652;
+  --brand-cyan: #00e5ff;
+  --brand-blue: #2563eb;
+  --text-main: #f8fafc;
+  --text-muted: #8492a6;
+  --accent-green: #10b981;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+}
+
+html, body {
+  background-color: var(--bg-deep);
+  color: var(--text-main);
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input, textarea {
+  user-select: auto;
+  -webkit-user-select: auto;
+  color: var(--text-main);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Custom Touch Range Sliders */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: #1e2538;
+  border-radius: 2px;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--brand-cyan);
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.6);
+  border: 2px solid #050608;
+}
+
+@keyframes sweepLaser {
+  0% { top: 6%; opacity: 0.5; }
+  50% { opacity: 1; }
+  100% { top: 94%; opacity: 0.5; }
+}
+
+.laser-scanner {
+  animation: sweepLaser 1.8s ease-in-out infinite alternate;
+}
+
+@keyframes splashFadeIn {
+  from { opacity: 0; transform: scale(0.88); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.splash-anim {
+  animation: splashFadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}

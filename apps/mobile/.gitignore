@@ -39,10 +39,3 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-node_modules/
-.next/
-out/
-android/app/build/
-android/.gradle/
-*.png
-run-agent-qa.js
