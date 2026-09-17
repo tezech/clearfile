@@ -3,36 +3,51 @@
 import { useState } from "react";
 import imageCompression from "browser-image-compression";
 
+const QUALITY_LEVELS = {
+  light: { label: "Light (best quality)", maxSizeMB: 2, maxWidthOrHeight: 2560, initialQuality: 0.9 },
+  recommended: { label: "Recommended", maxSizeMB: 1, maxWidthOrHeight: 1920, initialQuality: 0.75 },
+  extreme: { label: "Extreme (smallest size)", maxSizeMB: 0.4, maxWidthOrHeight: 1280, initialQuality: 0.5 },
+};
+
 export default function CompressImage() {
   const [originalFile, setOriginalFile] = useState(null);
   const [originalSize, setOriginalSize] = useState(0);
+  const [qualityLevel, setQualityLevel] = useState("recommended");
   const [compressedBlob, setCompressedBlob] = useState(null);
   const [compressedSize, setCompressedSize] = useState(0);
   const [isCompressing, setIsCompressing] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
   const [showAd, setShowAd] = useState(false);
   const [adCountdown, setAdCountdown] = useState(3);
 
-  const handleFileSelect = async (e) => {
+  const handleFileSelect = (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
+    setErrorMsg("");
     setOriginalFile(file);
     setOriginalSize(file.size);
     setCompressedBlob(null);
+  };
+
+  const runCompression = async () => {
+    if (!originalFile) return;
+    setErrorMsg("");
     setIsCompressing(true);
 
     try {
-      const options = {
-        maxSizeMB: 1,
-        maxWidthOrHeight: 1920,
+      const level = QUALITY_LEVELS[qualityLevel];
+      const compressed = await imageCompression(originalFile, {
+        maxSizeMB: level.maxSizeMB,
+        maxWidthOrHeight: level.maxWidthOrHeight,
+        initialQuality: level.initialQuality,
         useWebWorker: true,
-        initialQuality: 0.8,
-      };
-      const compressed = await imageCompression(file, options);
+      });
       setCompressedBlob(compressed);
       setCompressedSize(compressed.size);
     } catch (error) {
-      alert("Something went wrong compressing this file. Try a different image.");
+      setErrorMsg("Something went wrong compressing this file. Try a different image.");
+      setOriginalFile(null);
       console.error(error);
     } finally {
       setIsCompressing(false);
@@ -84,8 +99,14 @@ export default function CompressImage() {
           Upload a JPG, PNG, or WebP. It's compressed entirely on your device — nothing is uploaded anywhere.
         </p>
 
+        {errorMsg && (
+          <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-4 mb-6">
+            {errorMsg}
+          </div>
+        )}
+
         {/* Upload box */}
-        {!compressedBlob && !isCompressing && (
+        {!originalFile && !isCompressing && !compressedBlob && (
           <label className="block border-2 border-dashed border-gray-300 rounded-xl p-12 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition bg-white">
             <input
               type="file"
@@ -96,6 +117,38 @@ export default function CompressImage() {
             <p className="text-gray-700 font-medium mb-1">Click to choose an image</p>
             <p className="text-gray-400 text-sm">JPG, PNG, or WebP</p>
           </label>
+        )}
+
+        {/* Quality picker */}
+        {originalFile && !isCompressing && !compressedBlob && (
+          <div className="border border-gray-200 rounded-xl p-8 bg-white">
+            <p className="text-gray-700 font-medium mb-1">{originalFile.name}</p>
+            <p className="text-gray-400 text-sm mb-6">{formatSize(originalSize)}</p>
+
+            <p className="text-sm text-gray-600 mb-3">Compression quality:</p>
+            <div className="grid grid-cols-3 gap-2 mb-6">
+              {Object.entries(QUALITY_LEVELS).map(([key, level]) => (
+                <button
+                  key={key}
+                  onClick={() => setQualityLevel(key)}
+                  className={`border text-sm font-medium py-2.5 rounded-lg transition ${
+                    qualityLevel === key
+                      ? "border-gray-900 bg-gray-900 text-white"
+                      : "border-gray-300 text-gray-800 hover:border-gray-900"
+                  }`}
+                >
+                  {level.label}
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={runCompression}
+              className="w-full bg-gray-900 text-white font-medium py-3 rounded-lg hover:bg-gray-800 transition"
+            >
+              Compress
+            </button>
+          </div>
         )}
 
         {/* Compressing state */}
