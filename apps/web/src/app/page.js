@@ -19,7 +19,7 @@ export default function Home() {
       </section>
 
       <section className="max-w-5xl mx-auto px-6 pb-20">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
 
           <a href="/compress-pdf" className="block bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition">
             <h2 className="text-lg font-semibold text-gray-900 mb-2">Compress PDF</h2>
@@ -37,10 +37,18 @@ export default function Home() {
             <span className="text-blue-600 text-sm font-medium">Try it &rarr;</span>
           </a>
 
+          <a href="/enhance-image" className="block bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition">
+            <h2 className="text-lg font-semibold text-gray-900 mb-2">Enhance Image</h2>
+            <p className="text-gray-600 text-sm mb-4">
+              Sharpen, denoise, and auto-correct contrast in one click.
+            </p>
+            <span className="text-blue-600 text-sm font-medium">Try it &rarr;</span>
+          </a>
+
           <a href="/convert-files" className="block bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition">
             <h2 className="text-lg font-semibold text-gray-900 mb-2">Convert Files</h2>
             <p className="text-gray-600 text-sm mb-4">
-              Switch between JPG, PNG, WebP, and PDF.
+              Switch between JPG, PNG, WebP, PDF, and DOCX/TXT.
             </p>
             <span className="text-blue-600 text-sm font-medium">Try it &rarr;</span>
           </a>

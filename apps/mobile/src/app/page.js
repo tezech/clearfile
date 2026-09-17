@@ -434,6 +434,61 @@ export default function ClearfileApexEngine() {
     setCustomKBInput(suggested.toString());
   };
 
+  /**
+   * Binary-searches JPEG quality (and, if that alone can't get within
+   * tolerance, progressively downscales dimensions too) to converge the
+   * encoded size on targetKB, rather than snapping to one of a handful of
+   * fixed quality presets.
+   */
+  const compressImageToTarget = (img, targetKB) => {
+    const TOLERANCE = 0.1; // +/-10%
+    const dataUrlBytes = (dataUrl) =>
+      Math.round(((dataUrl.length - "data:image/jpeg;base64,".length) * 3) / 4);
+
+    let best = null;
+    let scale = 1;
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const maxDim = Math.round(1920 * scale);
+      let w = img.width;
+      let h = img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.round((h * maxDim) / w);
+          w = maxDim;
+        } else {
+          w = Math.round((w * maxDim) / h);
+          h = maxDim;
+        }
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, w, h);
+
+      let lo = 0.05;
+      let hi = 0.95;
+      for (let i = 0; i < 8; i++) {
+        const quality = (lo + hi) / 2;
+        const dataUrl = canvas.toDataURL("image/jpeg", quality);
+        const kb = dataUrlBytes(dataUrl) / 1024;
+
+        if (!best || Math.abs(kb - targetKB) < Math.abs(best.kb - targetKB)) {
+          best = { dataUrl, bytes: Math.round(kb * 1024), kb };
+        }
+        if (kb > targetKB) hi = quality;
+        else lo = quality;
+      }
+
+      if (Math.abs(best.kb - targetKB) <= targetKB * TOLERANCE) break;
+      scale *= 0.75; // still outside tolerance at any quality: shrink and retry
+    }
+
+    return best;
+  };
+
   const executeUniversalCompression = async () => {
     if (compFiles.length === 0) return;
     setIsCompressing(true);
@@ -446,41 +501,11 @@ export default function ClearfileApexEngine() {
       reader.onload = (ev) => {
         const img = new Image();
         img.onload = () => {
-          let w = img.width;
-          let h = img.height;
-          const maxDim = 1920;
-          if (w > maxDim || h > maxDim) {
-            if (w > h) {
-              h = Math.round((h * maxDim) / w);
-              w = maxDim;
-            } else {
-              w = Math.round((w * maxDim) / h);
-              h = maxDim;
-            }
-          }
-
-          const canvas = document.createElement("canvas");
-          canvas.width = w;
-          canvas.height = h;
-          const ctx = canvas.getContext("2d");
-          ctx.drawImage(img, 0, 0, w, h);
-
-          const qualitySteps = [0.92, 0.78, 0.62, 0.48, 0.32, 0.18, 0.08];
-          let chosenDataUrl = null;
-          let chosenSize = 0;
-
-          for (const q of qualitySteps) {
-            const dataUrl = canvas.toDataURL("image/jpeg", q);
-            const head = "data:image/jpeg;base64,";
-            const bytes = Math.round((dataUrl.length - head.length) * 3 / 4);
-            chosenDataUrl = dataUrl;
-            chosenSize = bytes;
-            if (bytes / 1024 <= targetSizeKB) break;
-          }
+          const best = compressImageToTarget(img, targetSizeKB);
 
           setCompressedResult({
-            dataUrl: chosenDataUrl,
-            size: chosenSize,
+            dataUrl: best.dataUrl,
+            size: best.bytes,
             origSize: file.size,
             name: file.name,
           });
@@ -536,6 +561,140 @@ export default function ClearfileApexEngine() {
         setIsCompressing(false);
       }
     }
+  };
+
+  // =========================================================================
+  // TOOL 6: PHOTO ENHANCER (SHARPEN + DENOISE + AUTO-CONTRAST)
+  // =========================================================================
+  const ENHANCE_LEVELS = {
+    light: { label: "Light", sharpen: 0.35, clipPercent: 0.003 },
+    balanced: { label: "Balanced", sharpen: 0.65, clipPercent: 0.006 },
+    strong: { label: "Strong", sharpen: 1.0, clipPercent: 0.01 },
+  };
+  const [enhanceSourceFile, setEnhanceSourceFile] = useState(null);
+  const [enhanceSourcePreview, setEnhanceSourcePreview] = useState(null);
+  const [enhanceLevel, setEnhanceLevel] = useState("balanced");
+  const [enhanceResultUrl, setEnhanceResultUrl] = useState(null);
+  const [isEnhancing, setIsEnhancing] = useState(false);
+
+  const handlePickEnhanceFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setEnhanceSourceFile(file);
+    setEnhanceSourcePreview(URL.createObjectURL(file));
+    setEnhanceResultUrl(null);
+  };
+
+  const boxBlur3x3 = (data, width, height) => {
+    const out = new Uint8ClampedArray(data.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const outIdx = (y * width + x) * 4;
+        for (let c = 0; c < 3; c++) {
+          let sum = 0;
+          let count = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            const ny = y + dy;
+            if (ny < 0 || ny >= height) continue;
+            for (let dx = -1; dx <= 1; dx++) {
+              const nx = x + dx;
+              if (nx < 0 || nx >= width) continue;
+              sum += data[(ny * width + nx) * 4 + c];
+              count++;
+            }
+          }
+          out[outIdx + c] = sum / count;
+        }
+        out[outIdx + 3] = data[outIdx + 3];
+      }
+    }
+    return out;
+  };
+
+  const unsharpMask = (data, blurred, amount) => {
+    const out = new Uint8ClampedArray(data.length);
+    for (let i = 0; i < data.length; i += 4) {
+      out[i] = data[i] + amount * (data[i] - blurred[i]);
+      out[i + 1] = data[i + 1] + amount * (data[i + 1] - blurred[i + 1]);
+      out[i + 2] = data[i + 2] + amount * (data[i + 2] - blurred[i + 2]);
+      out[i + 3] = data[i + 3];
+    }
+    return out;
+  };
+
+  const autoContrastStretch = (data, clipPercent) => {
+    const totalPixels = data.length / 4;
+    const clipCount = totalPixels * clipPercent;
+    const out = new Uint8ClampedArray(data.length);
+    const bounds = [0, 1, 2].map((channel) => {
+      const hist = new Array(256).fill(0);
+      for (let i = channel; i < data.length; i += 4) hist[data[i]]++;
+
+      let sum = 0;
+      let low = 0;
+      for (let v = 0; v < 256; v++) {
+        sum += hist[v];
+        if (sum >= clipCount) {
+          low = v;
+          break;
+        }
+      }
+      sum = 0;
+      let high = 255;
+      for (let v = 255; v >= 0; v--) {
+        sum += hist[v];
+        if (sum >= clipCount) {
+          high = v;
+          break;
+        }
+      }
+      if (high <= low) return { low: 0, high: 255 };
+      return { low, high };
+    });
+
+    for (let i = 0; i < data.length; i += 4) {
+      for (let c = 0; c < 3; c++) {
+        const { low, high } = bounds[c];
+        out[i + c] = ((data[i + c] - low) * 255) / (high - low);
+      }
+      out[i + 3] = data[i + 3];
+    }
+    return out;
+  };
+
+  const runPhotoEnhance = () => {
+    if (!enhanceSourceFile) return;
+    setIsEnhancing(true);
+    notify("Enhancing photo...");
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0);
+
+        const { sharpen, clipPercent } = ENHANCE_LEVELS[enhanceLevel];
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const blurred = boxBlur3x3(imageData.data, canvas.width, canvas.height);
+        const sharpened = unsharpMask(imageData.data, blurred, sharpen);
+        const leveled = autoContrastStretch(sharpened, clipPercent);
+
+        ctx.putImageData(new ImageData(leveled, canvas.width, canvas.height), 0, 0);
+        setEnhanceResultUrl(canvas.toDataURL("image/jpeg", 0.92));
+        setIsEnhancing(false);
+        notify("Photo enhanced!");
+      };
+      img.onerror = () => {
+        setIsEnhancing(false);
+        alert("Couldn't read this image. Try a different file.");
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(enhanceSourceFile);
   };
 
   // =========================================================================
@@ -782,6 +941,11 @@ export default function ClearfileApexEngine() {
         <rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" />
       </svg>
     ),
+    Enhance: () => (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
+      </svg>
+    ),
     Back: () => (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
         <path d="M19 12H5" /><path d="M12 19l-7-7 7-7" />
@@ -793,6 +957,7 @@ export default function ClearfileApexEngine() {
     { id: "scan", label: "Doc Scanner", desc: "4-corner perspective warp & inspection studio", icon: Icons.Scanner },
     { id: "sign", label: "Sign Document", desc: "Background-less ink on live document preview", icon: Icons.Signature },
     { id: "compress", label: "Compress Files", desc: "Target KB compression for Image, PDF & Docs", icon: Icons.Compress },
+    { id: "enhance", label: "Enhance Photo", desc: "Sharpen, denoise & auto-color correct", icon: Icons.Enhance },
     { id: "convert", label: "Convert Formats", desc: "Universal transcoder to PDF, PNG, JPG, WEBP", icon: Icons.Convert },
     { id: "qr", label: "QR Utility", desc: "Direct browser redirect & interactive link badge", icon: Icons.QR },
   ];
@@ -1471,6 +1636,109 @@ export default function ClearfileApexEngine() {
                   }}
                 >
                   Save Compressed File to Phone 💾
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TOOL 6: PHOTO ENHANCER */}
+        {activeTool === "enhance" && (
+          <div style={{ backgroundColor: "#0e1017", border: "1px solid #1e2235", borderRadius: "18px", padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
+            <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
+              Sharpen, Denoise &amp; Auto-Color Correct
+            </div>
+
+            {!enhanceSourceFile ? (
+              <label style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                border: "2px dashed #262b3d",
+                borderRadius: "14px",
+                padding: "36px 16px",
+                cursor: "pointer",
+                backgroundColor: "#111420"
+              }}>
+                <div style={{ color: "#00d4ff", marginBottom: "8px" }}><Icons.Enhance /></div>
+                <span style={{ fontSize: "14px", fontWeight: "600" }}>Select Photo to Enhance</span>
+                <span style={{ fontSize: "10px", color: "#8492a6", marginTop: "4px" }}>JPG, PNG, or WEBP</span>
+                <input type="file" accept="image/*" onChange={handlePickEnhanceFile} style={{ display: "none" }} />
+              </label>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                <img
+                  src={enhanceResultUrl || enhanceSourcePreview}
+                  alt="Enhance preview"
+                  style={{ width: "100%", height: "220px", objectFit: "contain", borderRadius: "12px", backgroundColor: "#000" }}
+                />
+
+                <div style={{ background: "#131622", padding: "14px", borderRadius: "12px", border: "1px solid #202434" }}>
+                  <span style={{ fontSize: "11px", color: "#8492a6" }}>Enhancement strength:</span>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "8px", marginTop: "8px" }}>
+                    {Object.entries(ENHANCE_LEVELS).map(([key, cfg]) => (
+                      <button
+                        key={key}
+                        onClick={() => setEnhanceLevel(key)}
+                        style={{
+                          padding: "8px 0",
+                          borderRadius: "6px",
+                          border: enhanceLevel === key ? "1px solid #00e5ff" : "1px solid #202434",
+                          background: enhanceLevel === key ? "rgba(0, 212, 255, 0.15)" : "#161a28",
+                          color: enhanceLevel === key ? "#00e5ff" : "#8492a6",
+                          fontSize: "11px",
+                          fontWeight: "bold"
+                        }}
+                      >
+                        {cfg.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <label style={{ fontSize: "11px", color: "#8492a6", cursor: "pointer" }}>
+                    Change Photo
+                    <input type="file" accept="image/*" onChange={handlePickEnhanceFile} style={{ display: "none" }} />
+                  </label>
+                </div>
+
+                <button
+                  onClick={runPhotoEnhance}
+                  disabled={isEnhancing}
+                  style={{
+                    padding: "14px",
+                    borderRadius: "12px",
+                    background: "#00e5ff",
+                    color: "#050608",
+                    fontSize: "13px",
+                    fontWeight: "bold",
+                    border: "none"
+                  }}
+                >
+                  {isEnhancing ? "Enhancing..." : "Enhance Photo"}
+                </button>
+              </div>
+            )}
+
+            {enhanceResultUrl && (
+              <div style={{ background: "#131622", border: "1px solid rgba(16,185,129,0.4)", borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                <div style={{ fontSize: "12px", color: "#10b981", fontWeight: "bold" }}>
+                  ✓ Enhanced! Sharpened, denoised, and contrast auto-corrected.
+                </div>
+                <button
+                  onClick={() => exportFileToDevice(enhanceResultUrl, `enhanced-${enhanceSourceFile.name}`)}
+                  style={{
+                    padding: "12px",
+                    borderRadius: "10px",
+                    background: "#161a28",
+                    border: "1px solid #00e5ff",
+                    color: "#00e5ff",
+                    fontSize: "12px",
+                    fontWeight: "bold"
+                  }}
+                >
+                  Save Enhanced Photo to Phone 💾
                 </button>
               </div>
             )}

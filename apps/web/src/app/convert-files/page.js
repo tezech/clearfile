@@ -1,8 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import JSZip from "jszip";
+import mammoth from "mammoth";
+
+const PAGE_WIDTH = 612;
+const PAGE_HEIGHT = 792;
+const PAGE_MARGIN = 50;
 
 export default function ConvertFiles() {
   const [activeTab, setActiveTab] = useState("imageFormat");
@@ -14,6 +19,9 @@ export default function ConvertFiles() {
 
   const [pdfFile, setPdfFile] = useState(null);
   const [pdfExportFormat, setPdfExportFormat] = useState("jpeg");
+
+  const [docFile, setDocFile] = useState(null);
+  const [docTargetFormat, setDocTargetFormat] = useState("pdf");
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -34,6 +42,7 @@ export default function ConvertFiles() {
     setImageFile(null);
     setMultiImages([]);
     setPdfFile(null);
+    setDocFile(null);
   };
 
   // ---------- Tab 1: Image format conversion ----------
@@ -116,6 +125,31 @@ export default function ConvertFiles() {
     }
   };
 
+  // ---------- Shared: rasterize PDF bytes to one image per page ----------
+  const renderPdfBytesToPageBlobs = async (pdfArrayBuffer, format) => {
+    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://unpkg.com/pdfjs-dist@4.7.76/legacy/build/pdf.worker.mjs";
+
+    const pdf = await pdfjsLib.getDocument({ data: pdfArrayBuffer }).promise;
+    const mime = format === "jpeg" ? "image/jpeg" : `image/${format}`;
+    const pageBlobs = [];
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 2 });
+      const canvas = document.createElement("canvas");
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext("2d");
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, mime, 0.9));
+      pageBlobs.push(blob);
+    }
+    return pageBlobs;
+  };
+
   // ---------- Tab 3: PDF to Images ----------
   const pdfToImages = async () => {
     if (!pdfFile) return;
@@ -123,29 +157,9 @@ export default function ConvertFiles() {
     setErrorMsg("");
 
     try {
-      const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://unpkg.com/pdfjs-dist@4.7.76/legacy/build/pdf.worker.mjs";
-
       const arrayBuffer = await pdfFile.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-
-      const mime = pdfExportFormat === "jpeg" ? "image/jpeg" : "image/png";
       const ext = pdfExportFormat === "jpeg" ? "jpg" : "png";
-      const pageBlobs = [];
-
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2 });
-        const canvas = document.createElement("canvas");
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext("2d");
-        await page.render({ canvasContext: ctx, viewport }).promise;
-
-        const blob = await new Promise((resolve) => canvas.toBlob(resolve, mime, 0.9));
-        pageBlobs.push(blob);
-      }
+      const pageBlobs = await renderPdfBytesToPageBlobs(arrayBuffer, pdfExportFormat);
 
       if (pageBlobs.length === 1) {
         setOutputBlob(pageBlobs[0]);
@@ -167,10 +181,106 @@ export default function ConvertFiles() {
     }
   };
 
+  // ---------- Tab 4: Document (TXT/DOCX) to PDF/PNG/JPG/WEBP ----------
+  const extractDocumentText = async (file) => {
+    if (file.name.toLowerCase().endsWith(".docx")) {
+      const arrayBuffer = await file.arrayBuffer();
+      const { value } = await mammoth.extractRawText({ arrayBuffer });
+      return value;
+    }
+    return file.text();
+  };
+
+  const textToPdfBytes = async (text) => {
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontSize = 11;
+    const lineHeight = fontSize * 1.4;
+    const maxWidth = PAGE_WIDTH - PAGE_MARGIN * 2;
+    const maxLinesPerPage = Math.floor((PAGE_HEIGHT - PAGE_MARGIN * 2) / lineHeight);
+
+    const lines = [];
+    for (const paragraph of text.split(/\r?\n/)) {
+      if (paragraph.trim() === "") {
+        lines.push("");
+        continue;
+      }
+      let current = "";
+      for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+        const candidate = current ? `${current} ${word}` : word;
+        if (current && font.widthOfTextAtSize(candidate, fontSize) > maxWidth) {
+          lines.push(current);
+          current = word;
+        } else {
+          current = candidate;
+        }
+      }
+      if (current) lines.push(current);
+    }
+    if (lines.length === 0) lines.push("");
+
+    let page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+    let y = PAGE_HEIGHT - PAGE_MARGIN;
+    let lineCount = 0;
+
+    for (const line of lines) {
+      if (lineCount >= maxLinesPerPage) {
+        page = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+        y = PAGE_HEIGHT - PAGE_MARGIN;
+        lineCount = 0;
+      }
+      page.drawText(line, { x: PAGE_MARGIN, y, size: fontSize, font, color: rgb(0, 0, 0) });
+      y -= lineHeight;
+      lineCount++;
+    }
+
+    return pdfDoc.save();
+  };
+
+  const convertDocument = async () => {
+    if (!docFile) return;
+    setIsProcessing(true);
+    setErrorMsg("");
+
+    try {
+      const text = await extractDocumentText(docFile);
+      const pdfBytes = await textToPdfBytes(text);
+      const baseName = docFile.name.replace(/\.[^/.]+$/, "");
+
+      if (docTargetFormat === "pdf") {
+        setOutputBlob(new Blob([pdfBytes], { type: "application/pdf" }));
+        setOutputFilename(`${baseName}.pdf`);
+        return;
+      }
+
+      const ext = docTargetFormat === "jpeg" ? "jpg" : docTargetFormat;
+      const pageBlobs = await renderPdfBytesToPageBlobs(pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength), docTargetFormat);
+
+      if (pageBlobs.length === 1) {
+        setOutputBlob(pageBlobs[0]);
+        setOutputFilename(`${baseName}.${ext}`);
+      } else {
+        const zip = new JSZip();
+        pageBlobs.forEach((blob, index) => {
+          zip.file(`${baseName}-page-${index + 1}.${ext}`, blob);
+        });
+        const zipBlob = await zip.generateAsync({ type: "blob" });
+        setOutputBlob(zipBlob);
+        setOutputFilename(`${baseName}.zip`);
+      }
+    } catch (error) {
+      setErrorMsg("Couldn't convert this document. Make sure it's a valid .txt or .docx file.");
+      console.error(error);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const runConversion = () => {
     if (activeTab === "imageFormat") convertImageFormat();
     else if (activeTab === "imagesToPdf") imagesToPdf();
     else if (activeTab === "pdfToImages") pdfToImages();
+    else if (activeTab === "document") convertDocument();
   };
 
   const startAdThenDownload = () => {
@@ -199,12 +309,14 @@ export default function ConvertFiles() {
     setImageFile(null);
     setMultiImages([]);
     setPdfFile(null);
+    setDocFile(null);
   };
 
   const canRun =
     (activeTab === "imageFormat" && imageFile) ||
     (activeTab === "imagesToPdf" && multiImages.length > 0) ||
-    (activeTab === "pdfToImages" && pdfFile);
+    (activeTab === "pdfToImages" && pdfFile) ||
+    (activeTab === "document" && docFile);
 
   return (
     <main className="min-h-screen bg-gray-50">
@@ -246,6 +358,14 @@ export default function ConvertFiles() {
             }`}
           >
             PDF &rarr; Images
+          </button>
+          <button
+            onClick={() => switchTab("document")}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+              activeTab === "document" ? "bg-gray-900 text-white" : "bg-white border border-gray-300 text-gray-700"
+            }`}
+          >
+            Document (DOCX/TXT)
           </button>
         </div>
 
@@ -338,6 +458,42 @@ export default function ConvertFiles() {
                 </div>
                 <p className="text-xs text-gray-400 mb-6">
                   Multiple pages will be delivered as a .zip file.
+                </p>
+              </>
+            )}
+
+            {activeTab === "document" && (
+              <>
+                <label className="block border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition mb-6">
+                  <input
+                    type="file"
+                    accept=".txt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    onChange={(e) => setDocFile(e.target.files[0])}
+                    className="hidden"
+                  />
+                  <p className="text-gray-700 font-medium">
+                    {docFile ? docFile.name : "Click to choose a .txt or .docx file"}
+                  </p>
+                </label>
+                <p className="text-sm text-gray-600 mb-3">Convert to:</p>
+                <div className="grid grid-cols-4 gap-2 mb-6">
+                  {["pdf", "png", "jpeg", "webp"].map((fmt) => (
+                    <button
+                      key={fmt}
+                      onClick={() => setDocTargetFormat(fmt)}
+                      className={`py-2.5 rounded-lg text-sm font-medium border transition ${
+                        docTargetFormat === fmt
+                          ? "border-gray-900 bg-gray-900 text-white"
+                          : "border-gray-300 text-gray-700 hover:border-gray-900"
+                      }`}
+                    >
+                      {fmt.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-400 mb-6">
+                  Text is re-flowed onto standard pages; original fonts/images in .docx files aren't preserved.
+                  Multiple pages exported as an image are delivered as a .zip file.
                 </p>
               </>
             )}
