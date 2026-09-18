@@ -53,6 +53,14 @@ export default function Home() {
             <span className="text-blue-600 text-sm font-medium">Try it &rarr;</span>
           </a>
 
+          <a href="/sign-document" className="block bg-white border border-gray-200 rounded-xl p-6 hover:shadow-md transition">
+            <h2 className="text-lg font-semibold text-gray-900 mb-2">Sign Document</h2>
+            <p className="text-gray-600 text-sm mb-4">
+              Draw a signature and place it exactly where you want on a PDF or image.
+            </p>
+            <span className="text-blue-600 text-sm font-medium">Try it &rarr;</span>
+          </a>
+
         </div>
       </section>
 

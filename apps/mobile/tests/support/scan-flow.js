@@ -17,8 +17,8 @@ async function openScannerAndCapture(page) {
   if (await dashboardEntry.count()) {
     await dashboardEntry.click();
   }
-  await page.getByText("Open Camera Viewfinder").click();
-  await expect(page.getByText("SNAP DOCUMENT")).toBeVisible({ timeout: 10_000 });
+  await page.getByText("Open camera", { exact: true }).click();
+  await expect(page.getByText("Capture", { exact: true })).toBeVisible({ timeout: 10_000 });
 
   await page.waitForFunction(
     () => {
@@ -28,15 +28,15 @@ async function openScannerAndCapture(page) {
     { timeout: 10_000 }
   );
 
-  await page.getByText("SNAP DOCUMENT").click();
-  await expect(page.getByText(/Magic Color/)).toBeVisible({ timeout: 5000 });
+  await page.getByText("Capture", { exact: true }).click();
+  await expect(page.locator("main").getByText("Enhance", { exact: true })).toBeVisible({ timeout: 5000 });
 }
 
 /** Drags all 4 corner handles of the crop screen out to the container's edges. */
 async function dragCornersToEdges(page) {
-  const container = page.locator('div[style*="touch-action: none"]').first();
+  const container = page.getByTestId("crop-container");
   const containerBox = await container.boundingBox();
-  const pins = page.locator('div[style*="cursor: grab"]');
+  const pins = page.getByTestId("corner-pin");
   await expect(pins).toHaveCount(4);
 
   const margin = 6;

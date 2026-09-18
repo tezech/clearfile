@@ -14,17 +14,17 @@ test("CF-M06: compressing an image to a 200 KB target converges within tolerance
   const sourcePath = createSizedImageFile(800 * 1024, "compress-target-source.png");
 
   await page.locator("main").getByText("Compress Files").click();
-  await expect(page.getByText("Target File Compression Engine")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator("main").getByText("Compress Files", { exact: true })).toBeVisible({ timeout: 10_000 });
 
   await page.locator('input[type="file"]').first().setInputFiles(sourcePath);
 
   await page.getByRole("button", { name: "200 KB" }).click();
   await expect(page.locator('input[type="number"]')).toHaveValue("200");
 
-  await page.getByRole("button", { name: /Compress File\(s\)/ }).click();
+  await page.getByRole("button", { name: "Compress file(s)" }).click();
   await expect(page.getByText("Image compressed successfully!")).toBeVisible({ timeout: 15_000 });
 
-  const resultText = await page.getByText(/Compressed to .* Reduced by/).innerText();
+  const resultText = await page.getByText(/Compressed to .* smaller/).innerText();
   const match = resultText.match(/Compressed to ([\d.]+)\s*(KB|MB)/);
   expect(match, `could not parse result size from: ${resultText}`).not.toBeNull();
 
@@ -36,7 +36,7 @@ test("CF-M06: compressing an image to a 200 KB target converges within tolerance
     200 * 0.15
   );
 
-  await page.getByText("Save Compressed File to Phone", { exact: false }).click();
+  await page.getByText("Save to device", { exact: false }).click();
   await expect(page.getByText(/Saved to Documents! Opening share sheet/)).toBeVisible({ timeout: 15_000 });
 });
 
@@ -47,10 +47,10 @@ test("CF-M06: a smaller 50 KB target also converges within tolerance", async ({ 
   await page.locator('input[type="file"]').first().setInputFiles(sourcePath);
 
   await page.getByRole("button", { name: "50 KB" }).click();
-  await page.getByRole("button", { name: /Compress File\(s\)/ }).click();
+  await page.getByRole("button", { name: "Compress file(s)" }).click();
   await expect(page.getByText("Image compressed successfully!")).toBeVisible({ timeout: 15_000 });
 
-  const resultText = await page.getByText(/Compressed to .* Reduced by/).innerText();
+  const resultText = await page.getByText(/Compressed to .* smaller/).innerText();
   const match = resultText.match(/Compressed to ([\d.]+)\s*(KB|MB)/);
   const resultKB = match[2] === "MB" ? parseFloat(match[1]) * 1024 : parseFloat(match[1]);
 

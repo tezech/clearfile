@@ -10,7 +10,7 @@ test("CF-M10: enhancing a photo updates the preview and exports it", async ({ ap
   const sourcePath = createSizedImageFile(300 * 1024, "enhance-source.png");
 
   await page.locator("main").getByText("Enhance Photo").click();
-  await expect(page.getByText("Sharpen, Denoise & Auto-Color Correct")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Enhance Photo", { exact: true })).toBeVisible({ timeout: 10_000 });
 
   await page.locator('input[type="file"]').first().setInputFiles(sourcePath);
   await expect(page.getByText("Enhancement strength:")).toBeVisible();
@@ -19,13 +19,13 @@ test("CF-M10: enhancing a photo updates the preview and exports it", async ({ ap
   const srcBefore = await preview.getAttribute("src");
 
   await page.getByRole("button", { name: "Balanced" }).click();
-  await page.getByRole("button", { name: "Enhance Photo", exact: true }).click();
+  await page.getByRole("button", { name: "Enhance photo", exact: true }).click();
 
-  await expect(page.getByText(/Enhanced! Sharpened, denoised/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/Enhanced — sharpened, denoised/)).toBeVisible({ timeout: 15_000 });
   const srcAfter = await preview.getAttribute("src");
   expect(srcAfter, "preview should update to the enhanced output").not.toBe(srcBefore);
 
-  await page.getByText("Save Enhanced Photo to Phone", { exact: false }).click();
+  await page.getByText("Save to device", { exact: false }).click();
   await expect(page.getByText(/Saved to Documents! Opening share sheet/)).toBeVisible({ timeout: 15_000 });
 });
 
@@ -38,15 +38,15 @@ test("CF-M10: Light and Strong strengths produce different output", async ({ app
   const preview = page.locator('img[alt="Enhance preview"]');
 
   await page.getByRole("button", { name: "Light" }).click();
-  await page.getByRole("button", { name: "Enhance Photo", exact: true }).click();
-  await expect(page.getByText(/Enhanced! Sharpened, denoised/)).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Enhance photo", exact: true }).click();
+  await expect(page.getByText(/Enhanced — sharpened, denoised/)).toBeVisible({ timeout: 15_000 });
   const lightSrc = await preview.getAttribute("src");
 
-  await page.getByText("Change Photo").click();
+  await page.getByText("Change photo").click();
   await page.locator('input[type="file"]').first().setInputFiles(sourcePath);
   await page.getByRole("button", { name: "Strong" }).click();
-  await page.getByRole("button", { name: "Enhance Photo", exact: true }).click();
-  await expect(page.getByText(/Enhanced! Sharpened, denoised/)).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Enhance photo", exact: true }).click();
+  await expect(page.getByText(/Enhanced — sharpened, denoised/)).toBeVisible({ timeout: 15_000 });
   const strongSrc = await preview.getAttribute("src");
 
   expect(strongSrc).not.toBe(lightSrc);
@@ -57,18 +57,18 @@ test("CF-M10: switching dock tabs away from Enhance and back leaves no frozen st
 
   await page.locator("main").getByText("Enhance Photo").click();
   await page.locator('input[type="file"]').first().setInputFiles(sourcePath);
-  await page.getByRole("button", { name: "Enhance Photo", exact: true }).click();
-  await expect(page.getByText(/Enhanced! Sharpened, denoised/)).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Enhance photo", exact: true }).click();
+  await expect(page.getByText(/Enhanced — sharpened, denoised/)).toBeVisible({ timeout: 15_000 });
 
   await page.locator("footer").getByText("Scan QR", { exact: true }).click();
-  await expect(page.getByText("Continuous QR Scanner")).toBeVisible();
+  await expect(page.getByText("Scan QR Code", { exact: true })).toBeVisible();
 
   await page.locator("footer").getByText("Enhance", { exact: true }).click();
   // Tool state persists across dock switches everywhere in this app (by
   // design — e.g. Compress Files behaves the same way), so re-entering
   // shows the last result rather than resetting. What matters is that it's
-  // not stuck on the "Enhancing..." spinner and is fully interactive again.
-  await expect(page.getByText(/Enhanced! Sharpened, denoised/)).toBeVisible();
-  await expect(page.getByRole("button", { name: "Enhance Photo", exact: true })).toBeEnabled();
-  await expect(page.getByText("Change Photo")).toBeVisible();
+  // not stuck on the "Enhancing…" spinner and is fully interactive again.
+  await expect(page.getByText(/Enhanced — sharpened, denoised/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Enhance photo", exact: true })).toBeEnabled();
+  await expect(page.getByText("Change photo")).toBeVisible();
 });

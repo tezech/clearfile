@@ -4,7 +4,7 @@
 // without console errors.
 const { test, expect } = require("@playwright/test");
 
-const ROUTES = ["/", "/about", "/privacy", "/compress-image", "/compress-pdf", "/convert-files", "/enhance-image"];
+const ROUTES = ["/", "/about", "/privacy", "/compress-image", "/compress-pdf", "/convert-files", "/enhance-image", "/sign-document"];
 
 for (const route of ROUTES) {
   test(`CF-W02: ${route} <head> has AdSense script and SEO tags, no console errors`, async ({ page }) => {
