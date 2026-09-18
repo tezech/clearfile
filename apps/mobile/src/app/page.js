@@ -32,6 +32,14 @@ export default function ClearfileApexEngine() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   };
 
+  const hexToRgba = (hex, alpha) => {
+    const n = parseInt(hex.replace("#", ""), 16);
+    const r = (n >> 16) & 255;
+    const g = (n >> 8) & 255;
+    const b = n & 255;
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  };
+
   // Device Storage Export Bridge
   const exportFileToDevice = async (base64Data, filename) => {
     try {
@@ -105,6 +113,104 @@ export default function ClearfileApexEngine() {
     }
   };
 
+  const DEFAULT_CORNERS = [
+    { x: 10, y: 10 },
+    { x: 90, y: 10 },
+    { x: 90, y: 90 },
+    { x: 10, y: 90 },
+  ];
+
+  /**
+   * Heuristic auto edge-detection: downscales the frame, runs a Sobel
+   * gradient-magnitude pass, then finds the axis-aligned box whose row/
+   * column edge-strength projections cross a threshold. This isn't full
+   * perspective contour fitting (a genuinely rotated/skewed page won't be
+   * caught precisely) — it's a fast, dependency-free approximation that
+   * handles the common case (a document roughly facing the camera against
+   * a plainer background). Returns null when the frame doesn't have a
+   * confident, non-degenerate edge box, so callers can fall back to the
+   * manual default corners.
+   */
+  const detectDocumentCorners = (sourceCanvas) => {
+    const maxDim = 300;
+    const scale = Math.min(1, maxDim / Math.max(sourceCanvas.width, sourceCanvas.height));
+    const w = Math.max(3, Math.round(sourceCanvas.width * scale));
+    const h = Math.max(3, Math.round(sourceCanvas.height * scale));
+
+    const small = document.createElement("canvas");
+    small.width = w;
+    small.height = h;
+    const sctx = small.getContext("2d", { willReadFrequently: true });
+    sctx.drawImage(sourceCanvas, 0, 0, w, h);
+    const { data } = sctx.getImageData(0, 0, w, h);
+
+    const gray = new Float32Array(w * h);
+    for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+      gray[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    }
+
+    const mag = new Float32Array(w * h);
+    let maxMag = 0;
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        const gx =
+          -gray[i - w - 1] + gray[i - w + 1] - 2 * gray[i - 1] + 2 * gray[i + 1] - gray[i + w - 1] + gray[i + w + 1];
+        const gy =
+          -gray[i - w - 1] - 2 * gray[i - w] - gray[i - w + 1] + gray[i + w - 1] + 2 * gray[i + w] + gray[i + w + 1];
+        const m = Math.sqrt(gx * gx + gy * gy);
+        mag[i] = m;
+        if (m > maxMag) maxMag = m;
+      }
+    }
+    if (maxMag < 20) return null; // essentially flat frame, nothing to detect
+
+    const rowSum = new Float32Array(h);
+    const colSum = new Float32Array(w);
+    const edgeThreshold = maxMag * 0.25;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const m = mag[y * w + x];
+        if (m > edgeThreshold) {
+          rowSum[y] += m;
+          colSum[x] += m;
+        }
+      }
+    }
+
+    const findBound = (arr, fromStart) => {
+      const peak = Math.max(...arr);
+      if (peak <= 0) return fromStart ? 0 : arr.length - 1;
+      const cutoff = peak * 0.15;
+      if (fromStart) {
+        for (let i = 0; i < arr.length; i++) if (arr[i] >= cutoff) return i;
+        return 0;
+      }
+      for (let i = arr.length - 1; i >= 0; i--) if (arr[i] >= cutoff) return i;
+      return arr.length - 1;
+    };
+
+    const top = findBound(rowSum, true);
+    const bottom = findBound(rowSum, false);
+    const left = findBound(colSum, true);
+    const right = findBound(colSum, false);
+
+    const boxWidthPct = ((right - left) / w) * 100;
+    const boxHeightPct = ((bottom - top) / h) * 100;
+    // Reject boxes too small to be a real document, or so close to the
+    // full frame that auto-detection offers nothing over the default.
+    if (boxWidthPct < 30 || boxHeightPct < 30) return null;
+    if (boxWidthPct > 98 && boxHeightPct > 98) return null;
+
+    const toPct = (v, dim) => Math.min(96, Math.max(4, Math.round((v / dim) * 100)));
+    return [
+      { x: toPct(left, w), y: toPct(top, h) },
+      { x: toPct(right, w), y: toPct(top, h) },
+      { x: toPct(right, w), y: toPct(bottom, h) },
+      { x: toPct(left, w), y: toPct(bottom, h) },
+    ];
+  };
+
   const captureCameraFrame = () => {
     if (!scanVideoRef.current) return;
     const v = scanVideoRef.current;
@@ -121,12 +227,10 @@ export default function ClearfileApexEngine() {
     }
     setIsCameraActive(false);
     setRawCapturedImage(dataUrl);
-    setCorners([
-      { x: 10, y: 10 },
-      { x: 90, y: 10 },
-      { x: 90, y: 90 },
-      { x: 10, y: 90 },
-    ]);
+
+    const detected = detectDocumentCorners(canvas);
+    setCorners(detected || DEFAULT_CORNERS);
+    notify(detected ? "Document edges detected — adjust if needed." : "Drag the corners to match the page.");
   };
 
   const handleTouchCornerMove = (e) => {
@@ -248,22 +352,38 @@ export default function ClearfileApexEngine() {
       const arrayBuffer = await file.arrayBuffer();
       setDocToSignBytes(arrayBuffer);
 
-      // Render first page onto preview canvas
-      const canvas = document.createElement("canvas");
-      canvas.width = 600;
-      canvas.height = 800;
-      const ctx = canvas.getContext("2d");
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, 600, 800);
-      ctx.fillStyle = "#0f172a";
-      ctx.font = "bold 22px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(file.name, 300, 380);
-      ctx.fillStyle = "#64748b";
-      ctx.font = "14px sans-serif";
-      ctx.fillText("PDF Document Loaded - Tap anywhere to place signature", 300, 420);
-      setDocPreviewUrl(canvas.toDataURL("image/jpeg"));
-      notify("PDF loaded. Tap to position signature.");
+      // Render the actual first page (not a generic placeholder) so the tap
+      // position the user sees maps to the real page's aspect ratio and
+      // content — otherwise a tap that looks correct on a fixed 600x800
+      // placeholder can land somewhere else entirely on the real page.
+      try {
+        const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+        pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://unpkg.com/pdfjs-dist@4.10.38/legacy/build/pdf.worker.mjs";
+
+        // pdf.js can transfer/detach the buffer it's given; pass it a copy
+        // so docToSignBytes (used later by pdf-lib to burn the signature)
+        // stays intact.
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+        const page = await pdf.getPage(1);
+        const unscaled = page.getViewport({ scale: 1 });
+        const viewport = page.getViewport({ scale: 700 / unscaled.width });
+
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext("2d");
+        await page.render({ canvasContext: ctx, viewport }).promise;
+
+        setDocPreviewUrl(canvas.toDataURL("image/jpeg", 0.92));
+        notify("PDF loaded. Tap exactly where you want to sign.");
+      } catch (err) {
+        alert("Couldn't preview this PDF. It may be encrypted or corrupted.");
+        setIsPdfDocument(false);
+        setDocToSignBytes(null);
+        setDocFileName("");
+        console.error(err);
+      }
     } else {
       setIsPdfDocument(false);
       const reader = new FileReader();
@@ -362,20 +482,22 @@ export default function ClearfileApexEngine() {
     try {
       if (isPdfDocument) {
         const pdfDoc = await PDFDocument.load(docToSignBytes);
-        const pages = pdfDoc.getPages();
-        const lastPage = pages[pages.length - 1];
+        // Sign the same page the user was shown and tapped on (page 1) —
+        // not the last page, which could be different content entirely on
+        // a multi-page document and would silently misplace the signature.
+        const targetPage = pdfDoc.getPages()[0];
 
         const sigBytes = await fetch(signatureTransparentUrl).then((r) => r.arrayBuffer());
         const embeddedSig = await pdfDoc.embedPng(sigBytes);
 
-        const { width: pW, height: pH } = lastPage.getSize();
+        const { width: pW, height: pH } = targetPage.getSize();
         const sigW = attachSecuritySeal ? pW * 0.38 : pW * 0.28;
         const sigH = (embeddedSig.height * sigW) / embeddedSig.width;
 
         const posX = (sigCoordinates.x / 100) * pW - sigW / 2;
         const posY = ((100 - sigCoordinates.y) / 100) * pH - sigH / 2;
 
-        lastPage.drawImage(embeddedSig, {
+        targetPage.drawImage(embeddedSig, {
           x: Math.max(15, posX),
           y: Math.max(15, posY),
           width: sigW,
@@ -567,9 +689,9 @@ export default function ClearfileApexEngine() {
   // TOOL 6: PHOTO ENHANCER (SHARPEN + DENOISE + AUTO-CONTRAST)
   // =========================================================================
   const ENHANCE_LEVELS = {
-    light: { label: "Light", sharpen: 0.35, clipPercent: 0.003 },
-    balanced: { label: "Balanced", sharpen: 0.65, clipPercent: 0.006 },
-    strong: { label: "Strong", sharpen: 1.0, clipPercent: 0.01 },
+    light: { label: "Light", sharpen: 0.6, clipPercent: 0.008, saturation: 1.15 },
+    balanced: { label: "Balanced", sharpen: 1.0, clipPercent: 0.015, saturation: 1.3 },
+    strong: { label: "Strong", sharpen: 1.6, clipPercent: 0.025, saturation: 1.5 },
   };
   const [enhanceSourceFile, setEnhanceSourceFile] = useState(null);
   const [enhanceSourcePreview, setEnhanceSourcePreview] = useState(null);
@@ -662,6 +784,20 @@ export default function ClearfileApexEngine() {
     return out;
   };
 
+  /** Pushes each pixel's color away from its own luminance to boost vividness. */
+  const boostSaturation = (data, factor) => {
+    const out = new Uint8ClampedArray(data.length);
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      out[i] = luma + (r - luma) * factor;
+      out[i + 1] = luma + (g - luma) * factor;
+      out[i + 2] = luma + (b - luma) * factor;
+      out[i + 3] = data[i + 3];
+    }
+    return out;
+  };
+
   const runPhotoEnhance = () => {
     if (!enhanceSourceFile) return;
     setIsEnhancing(true);
@@ -677,13 +813,14 @@ export default function ClearfileApexEngine() {
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         ctx.drawImage(img, 0, 0);
 
-        const { sharpen, clipPercent } = ENHANCE_LEVELS[enhanceLevel];
+        const { sharpen, clipPercent, saturation } = ENHANCE_LEVELS[enhanceLevel];
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const blurred = boxBlur3x3(imageData.data, canvas.width, canvas.height);
         const sharpened = unsharpMask(imageData.data, blurred, sharpen);
         const leveled = autoContrastStretch(sharpened, clipPercent);
+        const vivid = boostSaturation(leveled, saturation);
 
-        ctx.putImageData(new ImageData(leveled, canvas.width, canvas.height), 0, 0);
+        ctx.putImageData(new ImageData(vivid, canvas.width, canvas.height), 0, 0);
         setEnhanceResultUrl(canvas.toDataURL("image/jpeg", 0.92));
         setIsEnhancing(false);
         notify("Photo enhanced!");
@@ -794,10 +931,12 @@ export default function ClearfileApexEngine() {
   };
 
   // =========================================================================
-  // TOOL 5: QR SCANNER (INTENT REDIRECT + HYPERLINK)
+  // TOOL 5A: QR SCANNER (DECODE + LINK SAFETY CHECK)
+  // TOOL 5B: QR GENERATOR
   // =========================================================================
   const [isQrLiveActive, setIsQrLiveActive] = useState(false);
   const [qrDecodedValue, setQrDecodedValue] = useState("");
+  const [qrPendingLink, setQrPendingLink] = useState(null); // { url, risk } awaiting user confirmation
   const [qrTextToGenerate, setQrTextToGenerate] = useState("https://clearfile.app");
   const [generatedQrCodeUrl, setGeneratedQrCodeUrl] = useState("");
   const qrVideoRef = useRef(null);
@@ -813,15 +952,70 @@ export default function ClearfileApexEngine() {
     }).then(setGeneratedQrCodeUrl);
   }, [qrTextToGenerate]);
 
-  const dispatchRedirect = async (url) => {
-    if (url.startsWith("http://") || url.startsWith("https://")) {
-      try {
-        await Browser.open({ url });
-      } catch (err) {
-        window.open(url, "_system");
+  const KNOWN_LINK_SHORTENERS = [
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly", "rebrand.ly", "cutt.ly", "shorturl.at",
+  ];
+
+  /** Lightweight heuristic scan — not a security guarantee, just surfaces common red flags before auto-opening a scanned link. */
+  const assessLinkRisk = (rawUrl) => {
+    const reasons = [];
+    let level = "safe";
+    try {
+      const u = new URL(rawUrl);
+      const hostname = u.hostname.toLowerCase();
+
+      if (u.protocol === "http:") {
+        reasons.push("Uses unencrypted HTTP, not HTTPS");
+        level = "caution";
       }
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
+        reasons.push("Points to a raw IP address instead of a domain name");
+        level = "danger";
+      }
+      if (hostname.includes("xn--")) {
+        reasons.push("Uses a lookalike international domain that can impersonate another site");
+        level = "danger";
+      }
+      if (rawUrl.includes("@") && rawUrl.indexOf("@") < rawUrl.indexOf(hostname)) {
+        reasons.push('Contains an "@" before the domain — a common link-spoofing trick');
+        level = "danger";
+      }
+      if (KNOWN_LINK_SHORTENERS.some((s) => hostname === s || hostname.endsWith(`.${s}`))) {
+        reasons.push("Uses a link shortener that hides the real destination");
+        if (level === "safe") level = "caution";
+      }
+      if (hostname.split(".").length > 4) {
+        reasons.push("Unusually many subdomains");
+        if (level === "safe") level = "caution";
+      }
+      return { level, reasons, hostname };
+    } catch {
+      return { level: "danger", reasons: ["Could not be parsed as a standard web address"], hostname: "" };
     }
   };
+
+  /** Surfaces a decoded value for user confirmation instead of opening it immediately. */
+  const presentDecodedValue = (value) => {
+    setQrDecodedValue(value);
+    if (value.startsWith("http://") || value.startsWith("https://")) {
+      setQrPendingLink({ url: value, risk: assessLinkRisk(value) });
+    } else {
+      setQrPendingLink(null);
+    }
+  };
+
+  const confirmOpenQrLink = async () => {
+    if (!qrPendingLink) return;
+    const { url } = qrPendingLink;
+    setQrPendingLink(null);
+    try {
+      await Browser.open({ url });
+    } catch (err) {
+      window.open(url, "_system");
+    }
+  };
+
+  const dismissQrLink = () => setQrPendingLink(null);
 
   const startQrLiveScanning = async () => {
     setQrDecodedValue("");
@@ -866,10 +1060,9 @@ export default function ClearfileApexEngine() {
     const code = jsQR(imgData.data, canvas.width, canvas.height);
 
     if (code) {
-      setQrDecodedValue(code.data);
       stopQrLiveScanning();
-      notify("QR Code Found! Opening link...");
-      dispatchRedirect(code.data);
+      presentDecodedValue(code.data);
+      notify("QR Code Found! Review before opening.");
     } else {
       qrAnimRef.current = requestAnimationFrame(tickQrScanning);
     }
@@ -890,9 +1083,8 @@ export default function ClearfileApexEngine() {
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const code = jsQR(imgData.data, canvas.width, canvas.height);
         if (code) {
-          setQrDecodedValue(code.data);
-          notify("QR detected! Opening link...");
-          dispatchRedirect(code.data);
+          presentDecodedValue(code.data);
+          notify("QR detected! Review before opening.");
         } else {
           alert("No QR code detected in this photo.");
         }
@@ -941,6 +1133,13 @@ export default function ClearfileApexEngine() {
         <rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" />
       </svg>
     ),
+    QRCreate: () => (
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
+        <rect x="3" y="14" width="7" height="7" />
+        <path d="M17 14v6M14 17h6" />
+      </svg>
+    ),
     Enhance: () => (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />
@@ -954,20 +1153,21 @@ export default function ClearfileApexEngine() {
   };
 
   const TOOLS = [
-    { id: "scan", label: "Doc Scanner", desc: "4-corner perspective warp & inspection studio", icon: Icons.Scanner },
-    { id: "sign", label: "Sign Document", desc: "Background-less ink on live document preview", icon: Icons.Signature },
-    { id: "compress", label: "Compress Files", desc: "Target KB compression for Image, PDF & Docs", icon: Icons.Compress },
-    { id: "enhance", label: "Enhance Photo", desc: "Sharpen, denoise & auto-color correct", icon: Icons.Enhance },
-    { id: "convert", label: "Convert Formats", desc: "Universal transcoder to PDF, PNG, JPG, WEBP", icon: Icons.Convert },
-    { id: "qr", label: "QR Utility", desc: "Direct browser redirect & interactive link badge", icon: Icons.QR },
+    { id: "scan", label: "Doc Scanner", dockLabel: "Scan", badge: "SCAN", desc: "Auto edge-detect, warp & inspection studio", icon: Icons.Scanner, accent: "#00e5ff" },
+    { id: "sign", label: "Sign Document", dockLabel: "Sign", badge: "SIGN", desc: "Real page preview — sign exactly where you tap", icon: Icons.Signature, accent: "#7c5cff" },
+    { id: "compress", label: "Compress Files", dockLabel: "Compress", badge: "COMPRESS", desc: "Target KB compression for Image, PDF & Docs", icon: Icons.Compress, accent: "#10b981" },
+    { id: "enhance", label: "Enhance Photo", dockLabel: "Enhance", badge: "ENHANCE", desc: "Sharpen, denoise & auto-color correct", icon: Icons.Enhance, accent: "#f59e0b" },
+    { id: "convert", label: "Convert Formats", dockLabel: "Convert", badge: "CONVERT", desc: "Universal transcoder to PDF, PNG, JPG, WEBP", icon: Icons.Convert, accent: "#4fb8ff" },
+    { id: "qrscan", label: "Scan QR", dockLabel: "Scan QR", badge: "QR SCAN", desc: "Live decode with a link safety check before opening", icon: Icons.QR, accent: "#00e5ff" },
+    { id: "qrgen", label: "Create QR", dockLabel: "Create QR", badge: "QR CREATE", desc: "Generate a QR code from text or a link", icon: Icons.QRCreate, accent: "#f472b6" },
   ];
 
   return (
     <div style={{
       height: "100vh",
       width: "100vw",
-      backgroundColor: "#050608",
-      color: "#f8fafc",
+      backgroundColor: "var(--bg-deep)",
+      color: "var(--text-main)",
       display: "flex",
       flexDirection: "column",
       overflow: "hidden"
@@ -979,7 +1179,8 @@ export default function ClearfileApexEngine() {
           position: "fixed",
           inset: 0,
           zIndex: 9999,
-          backgroundColor: "#050608",
+          backgroundColor: "var(--bg-deep)",
+          backgroundImage: "radial-gradient(circle at 50% 42%, rgba(0,229,255,0.12), transparent 60%)",
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -988,31 +1189,31 @@ export default function ClearfileApexEngine() {
         }}>
           <div className="splash-anim" style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
             <div style={{
-              width: "115px",
-              height: "115px",
-              borderRadius: "30px",
+              width: "112px",
+              height: "112px",
+              borderRadius: "28px",
               overflow: "hidden",
               border: "1.5px solid rgba(0, 229, 255, 0.4)",
-              boxShadow: "0 0 50px rgba(0, 229, 255, 0.25)",
-              backgroundColor: "#090c14",
+              boxShadow: "0 0 60px rgba(0, 229, 255, 0.3)",
+              backgroundColor: "var(--card-surface)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center"
             }}>
               <img src="/logo.png" alt="Clearfile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
             </div>
-            <div style={{ marginTop: "24px", textAlign: "center" }}>
+            <div style={{ marginTop: "26px", textAlign: "center" }}>
               <div style={{
-                fontSize: "32px",
-                fontWeight: "bold",
-                letterSpacing: "-0.5px",
-                background: "linear-gradient(135deg, #ffffff 40%, #00e5ff 100%)",
+                fontSize: "34px",
+                fontWeight: "800",
+                letterSpacing: "-0.7px",
+                background: "var(--brand-gradient)",
                 WebkitBackgroundClip: "text",
                 WebkitTextFillColor: "transparent"
               }}>
                 clearfile
               </div>
-              <div style={{ fontSize: "11px", color: "#8492a6", letterSpacing: "1.5px", textTransform: "uppercase", marginTop: "6px" }}>
+              <div style={{ fontSize: "11px", color: "var(--text-muted)", letterSpacing: "2px", textTransform: "uppercase", marginTop: "8px", fontWeight: "600" }}>
                 Autonomous Document Protocol
               </div>
             </div>
@@ -1023,9 +1224,10 @@ export default function ClearfileApexEngine() {
       {/* 2. TOP APP HEADER WITH BACK NAVIGATION */}
       <header style={{
         flexShrink: 0,
-        backgroundColor: "#0c0e15",
-        borderBottom: "1px solid #1a1e2c",
-        padding: "12px 18px",
+        backgroundColor: "rgba(15,18,25,0.9)",
+        backdropFilter: "blur(10px)",
+        borderBottom: "1px solid var(--border-line)",
+        padding: "14px 18px",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between"
@@ -1046,39 +1248,38 @@ export default function ClearfileApexEngine() {
                 display: "flex",
                 alignItems: "center",
                 gap: "6px",
-                background: "rgba(0, 229, 255, 0.1)",
+                background: "var(--brand-cyan-dim)",
                 border: "1px solid rgba(0, 229, 255, 0.25)",
-                color: "#00e5ff",
-                padding: "6px 12px",
-                borderRadius: "8px",
+                color: "var(--brand-cyan)",
+                padding: "7px 13px",
+                borderRadius: "var(--radius-pill)",
                 fontSize: "12px",
-                fontWeight: "bold",
-                cursor: "pointer"
+                fontWeight: "700"
               }}
             >
               <Icons.Back /> Back
             </button>
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <div style={{ width: "32px", height: "32px", borderRadius: "8px", overflow: "hidden", border: "1px solid rgba(0, 229, 255, 0.3)", backgroundColor: "#090c14" }}>
+              <div style={{ width: "34px", height: "34px", borderRadius: "10px", overflow: "hidden", border: "1px solid rgba(0, 229, 255, 0.3)", backgroundColor: "var(--card-surface)" }}>
                 <img src="/logo.png" alt="Clearfile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               </div>
               <div>
-                <div style={{ fontSize: "16px", fontWeight: "bold", letterSpacing: "-0.2px" }}>clearfile</div>
-                <div style={{ fontSize: "9px", color: "#8492a6", letterSpacing: "1px", textTransform: "uppercase" }}>Apex Hub</div>
+                <div style={{ fontSize: "16px", fontWeight: "800", letterSpacing: "-0.3px" }}>clearfile</div>
+                <div style={{ fontSize: "9px", color: "var(--text-muted)", letterSpacing: "1.2px", textTransform: "uppercase", fontWeight: "600" }}>Apex Hub</div>
               </div>
             </div>
           )}
         </div>
 
-        <span style={{ fontSize: "10px", color: "#00e5ff", background: "rgba(0, 229, 255, 0.08)", border: "1px solid rgba(0,229,255,0.25)", padding: "4px 8px", borderRadius: "6px", fontWeight: "600" }}>
-          {activeTool ? activeTool.toUpperCase() : "OFFLINE KERNEL"}
+        <span style={{ fontSize: "10px", color: "var(--brand-cyan)", background: "var(--brand-cyan-dim)", border: "1px solid rgba(0,229,255,0.25)", padding: "5px 10px", borderRadius: "var(--radius-pill)", fontWeight: "700", letterSpacing: "0.4px" }}>
+          {activeTool ? TOOLS.find((t) => t.id === activeTool)?.badge ?? activeTool.toUpperCase() : "OFFLINE KERNEL"}
         </span>
       </header>
 
       {/* TOAST SYSTEM */}
       {toastMsg && (
-        <div style={{ backgroundColor: "#00e5ff", color: "#050608", fontSize: "11px", fontWeight: "bold", textAlign: "center", padding: "6px" }}>
+        <div style={{ backgroundColor: "var(--brand-cyan)", color: "#04141a", fontSize: "11px", fontWeight: "700", textAlign: "center", padding: "8px", letterSpacing: "0.2px" }}>
           {toastMsg}
         </div>
       )}
@@ -1096,47 +1297,47 @@ export default function ClearfileApexEngine() {
 
         {/* HOME DASHBOARD */}
         {activeTool === null && (
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            <div style={{ padding: "8px 4px", fontSize: "13px", fontWeight: "bold", color: "#00e5ff", textTransform: "uppercase", letterSpacing: "1px" }}>
+          <div key="dashboard" className="gc-screen" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <div style={{ padding: "8px 4px 4px", fontSize: "13px", fontWeight: "800", color: "var(--brand-cyan)", textTransform: "uppercase", letterSpacing: "1.2px" }}>
               System Applications
             </div>
             {TOOLS.map((tool) => {
               const IconComp = tool.icon;
               return (
-                <div
+                <button
                   key={tool.id}
                   onClick={() => setActiveTool(tool.id)}
+                  className="gc-card"
                   style={{
-                    backgroundColor: "#0e1017",
-                    border: "1px solid #1e2235",
-                    borderRadius: "16px",
-                    padding: "18px",
+                    padding: "16px",
                     display: "flex",
                     alignItems: "center",
                     gap: "16px",
-                    cursor: "pointer",
-                    boxShadow: "0 4px 16px rgba(0,0,0,0.4)"
+                    textAlign: "left",
+                    width: "100%",
+                    color: "inherit"
                   }}
                 >
                   <div style={{
-                    width: "48px",
-                    height: "48px",
-                    borderRadius: "14px",
-                    background: "rgba(0, 229, 255, 0.1)",
-                    border: "1px solid rgba(0, 229, 255, 0.25)",
-                    color: "#00e5ff",
+                    width: "46px",
+                    height: "46px",
+                    flexShrink: 0,
+                    borderRadius: "var(--radius-md)",
+                    background: hexToRgba(tool.accent, 0.12),
+                    border: `1px solid ${hexToRgba(tool.accent, 0.35)}`,
+                    color: tool.accent,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center"
                   }}>
                     <IconComp />
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: "15px", fontWeight: "bold", color: "#f8fafc" }}>{tool.label}</div>
-                    <div style={{ fontSize: "11px", color: "#8492a6", marginTop: "2px" }}>{tool.desc}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: "15px", fontWeight: "800", color: "var(--text-main)" }}>{tool.label}</div>
+                    <div style={{ fontSize: "11.5px", color: "var(--text-muted)", marginTop: "2px", lineHeight: 1.4 }}>{tool.desc}</div>
                   </div>
-                  <div style={{ color: "#475569", fontSize: "18px" }}>→</div>
-                </div>
+                  <div style={{ color: "var(--text-faint)", fontSize: "18px", flexShrink: 0 }}>&rarr;</div>
+                </button>
               );
             })}
           </div>
@@ -1145,7 +1346,7 @@ export default function ClearfileApexEngine() {
         {/* TOOL 1: 4-CORNER PERSPECTIVE WARP SCANNER */}
         {activeTool === "scan" && (
           <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            <div style={{ backgroundColor: "#0e1017", border: "1px solid #1e2235", borderRadius: "18px", padding: "18px" }}>
+            <div className="gc-card gc-screen" style={{ padding: "18px" }}>
               <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase", marginBottom: "12px" }}>
                 Homography Perspective Document Scanner
               </div>
@@ -1371,7 +1572,7 @@ export default function ClearfileApexEngine() {
 
         {/* TOOL 2: DOCUMENT SIGNER */}
         {activeTool === "sign" && (
-          <div style={{ backgroundColor: "#0e1017", border: "1px solid #1e2235", borderRadius: "18px", padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
             <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
               Transparent Signature on Live Document
             </div>
@@ -1522,7 +1723,7 @@ export default function ClearfileApexEngine() {
 
         {/* TOOL 3: COMPRESSOR */}
         {activeTool === "compress" && (
-          <div style={{ backgroundColor: "#0e1017", border: "1px solid #1e2235", borderRadius: "18px", padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
             <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
               Target File Compression Engine
             </div>
@@ -1644,7 +1845,7 @@ export default function ClearfileApexEngine() {
 
         {/* TOOL 6: PHOTO ENHANCER */}
         {activeTool === "enhance" && (
-          <div style={{ backgroundColor: "#0e1017", border: "1px solid #1e2235", borderRadius: "18px", padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
             <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
               Sharpen, Denoise &amp; Auto-Color Correct
             </div>
@@ -1747,7 +1948,7 @@ export default function ClearfileApexEngine() {
 
         {/* TOOL 4: UNIVERSAL CONVERTER */}
         {activeTool === "convert" && (
-          <div style={{ backgroundColor: "#0e1017", border: "1px solid #1e2235", borderRadius: "18px", padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
+          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
             <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
               Universal Any-to-Any Converter
             </div>
@@ -1830,11 +2031,11 @@ export default function ClearfileApexEngine() {
           </div>
         )}
 
-        {/* TOOL 5: QR SCANNER (INTENT REDIRECT & HYPERLINK) */}
-        {activeTool === "qr" && (
-          <div style={{ backgroundColor: "#0e1017", border: "1px solid #1e2235", borderRadius: "18px", padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
+        {/* TOOL 5A: QR SCANNER (DECODE + LINK SAFETY CHECK) */}
+        {activeTool === "qrscan" && (
+          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
             <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
-              Continuous QR Scanner & Creator
+              Continuous QR Scanner
             </div>
 
             <div style={{ position: "relative", width: "100%", height: "240px", backgroundColor: "#000", borderRadius: "12px", overflow: "hidden", border: "1px solid #202434" }}>
@@ -1893,29 +2094,56 @@ export default function ClearfileApexEngine() {
                 <div style={{ fontSize: "13px", color: "#00e5ff", fontWeight: "bold", wordBreak: "break-all", marginTop: "4px" }}>
                   {qrDecodedValue}
                 </div>
-                {qrDecodedValue.startsWith("http") && (
-                  <button
-                    onClick={() => dispatchRedirect(qrDecodedValue)}
-                    style={{
-                      width: "100%",
-                      padding: "10px",
-                      borderRadius: "8px",
-                      background: "#00e5ff",
-                      color: "#050608",
-                      fontWeight: "bold",
-                      border: "none",
-                      marginTop: "8px",
-                      fontSize: "12px"
-                    }}
-                  >
-                    Open Link in Browser ↗
-                  </button>
-                )}
               </div>
             )}
 
-            <div style={{ borderTop: "1px solid #1a1e2c", paddingTop: "14px" }}>
-              <span style={{ fontSize: "11px", color: "#8492a6" }}>Generate QR Code:</span>
+            {qrPendingLink && (() => {
+              const { risk } = qrPendingLink;
+              const palette = {
+                danger: { accent: "#ef4444", bg: "rgba(239,68,68,0.1)" },
+                caution: { accent: "#f59e0b", bg: "rgba(245,158,11,0.1)" },
+                safe: { accent: "#10b981", bg: "rgba(16,185,129,0.1)" },
+              }[risk.level];
+
+              return (
+                <div style={{ background: palette.bg, border: `1px solid ${palette.accent}`, borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <div style={{ fontSize: "11px", color: palette.accent, fontWeight: "bold", textTransform: "uppercase" }}>
+                    {risk.level === "danger" ? "⚠ Potentially harmful link" : risk.level === "caution" ? "⚠ Use caution before opening" : "Link looks standard"}
+                  </div>
+                  {risk.reasons.length > 0 && (
+                    <ul style={{ margin: 0, paddingLeft: "18px", fontSize: "11px", color: "#c9d1e0", display: "flex", flexDirection: "column", gap: "4px" }}>
+                      {risk.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+                    </ul>
+                  )}
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                    <button
+                      onClick={dismissQrLink}
+                      style={{ padding: "10px", borderRadius: "8px", background: "#151824", border: "1px solid #2a314d", color: "#f8fafc", fontSize: "12px", fontWeight: "bold" }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={confirmOpenQrLink}
+                      style={{ padding: "10px", borderRadius: "8px", background: palette.accent, color: "#050608", fontWeight: "bold", border: "none", fontSize: "12px" }}
+                    >
+                      Open Link ↗
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* TOOL 5B: QR GENERATOR */}
+        {activeTool === "qrgen" && (
+          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
+            <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
+              QR Code Creator
+            </div>
+
+            <div>
+              <span style={{ fontSize: "11px", color: "#8492a6" }}>Text or Link:</span>
               <input
                 type="text"
                 value={qrTextToGenerate}
@@ -1958,15 +2186,20 @@ export default function ClearfileApexEngine() {
       </main>
 
       {/* 4. FIXED BOTTOM NAVIGATION DOCK */}
-      <footer style={{
-        flexShrink: 0,
-        backgroundColor: "#0c0e15",
-        borderTop: "1px solid #1a1e2c",
-        display: "flex",
-        justifyContent: "space-around",
-        alignItems: "center",
-        padding: "8px 4px 14px 4px"
-      }}>
+      <footer
+        className="no-scrollbar"
+        style={{
+          flexShrink: 0,
+          backgroundColor: "rgba(15,18,25,0.92)",
+          backdropFilter: "blur(10px)",
+          borderTop: "1px solid var(--border-line)",
+          display: "flex",
+          overflowX: "auto",
+          alignItems: "center",
+          gap: "2px",
+          padding: "8px 8px 14px 8px"
+        }}
+      >
         {TOOLS.map((tab) => {
           const isActive = activeTool === tab.id;
           const IconComp = tab.icon;
@@ -1974,7 +2207,7 @@ export default function ClearfileApexEngine() {
             <button
               key={tab.id}
               onClick={() => {
-                if (activeTool === "qr" && tab.id !== "qr") stopQrLiveScanning();
+                if (activeTool === "qrscan" && tab.id !== "qrscan") stopQrLiveScanning();
                 if (activeTool === "scan" && tab.id !== "scan") {
                   if (scanStreamRef.current) scanStreamRef.current.getTracks().forEach((t) => t.stop());
                   setIsCameraActive(false);
@@ -1982,25 +2215,24 @@ export default function ClearfileApexEngine() {
                 setActiveTool(tab.id);
               }}
               style={{
-                flex: 1,
-                background: "transparent",
+                flex: "0 0 auto",
+                minWidth: "64px",
+                background: isActive ? hexToRgba(tab.accent, 0.12) : "transparent",
                 border: "none",
+                borderRadius: "var(--radius-md)",
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
-                gap: "3px",
-                cursor: "pointer"
+                gap: "4px",
+                padding: "6px 8px"
               }}
             >
-              <div style={{ color: isActive ? "#00e5ff" : "#8492a6" }}>
+              <div style={{ color: isActive ? tab.accent : "var(--text-muted)" }}>
                 <IconComp />
               </div>
-              <span style={{ fontSize: "10px", fontWeight: isActive ? "bold" : "500", color: isActive ? "#00e5ff" : "#8492a6" }}>
-                {tab.label}
+              <span style={{ fontSize: "9.5px", fontWeight: isActive ? "800" : "600", color: isActive ? tab.accent : "var(--text-muted)", whiteSpace: "nowrap" }}>
+                {tab.dockLabel}
               </span>
-              {isActive && (
-                <div style={{ width: "4px", height: "4px", borderRadius: "50%", background: "#00e5ff", marginTop: "1px" }} />
-              )}
             </button>
           );
         })}

@@ -1,14 +1,45 @@
 :root {
-  --bg-deep: #050608;
-  --card-surface: #0e1118;
-  --card-elevated: #151926;
-  --border-line: #1e2538;
-  --border-glow: #2b3652;
+  /* Surfaces */
+  --bg-deep: #06070a;
+  --card-surface: #0f1219;
+  --card-elevated: #161b2a;
+  --card-elevated-2: #1b2133;
+
+  /* Borders */
+  --border-line: #1f2536;
+  --border-glow: #2c3654;
+
+  /* Brand */
   --brand-cyan: #00e5ff;
-  --brand-blue: #2563eb;
+  --brand-cyan-dim: rgba(0, 229, 255, 0.12);
+  --brand-violet: #7c5cff;
+  --brand-gradient: linear-gradient(135deg, #00e5ff 0%, #4fb8ff 55%, #7c5cff 100%);
+
+  /* Text */
   --text-main: #f8fafc;
-  --text-muted: #8492a6;
+  --text-muted: #8b96ab;
+  --text-faint: #5b6478;
+
+  /* Semantic */
   --accent-green: #10b981;
+  --accent-amber: #f59e0b;
+  --accent-red: #ef4444;
+
+  /* Scale */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-pill: 999px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-glow-cyan: 0 4px 18px rgba(0, 229, 255, 0.25);
+  --ease-standard: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 * {
@@ -16,7 +47,7 @@
   margin: 0;
   padding: 0;
   -webkit-font-smoothing: antialiased;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 html, body {
@@ -29,12 +60,44 @@ html, body {
   -webkit-user-select: none;
   -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
+  letter-spacing: -0.01em;
 }
 
 input, textarea {
   user-select: auto;
   -webkit-user-select: auto;
   color: var(--text-main);
+  font-family: inherit;
+}
+
+/* Every button in the app gets consistent, tactile press feedback for free
+   — no per-button JS state needed. */
+button {
+  font-family: inherit;
+  cursor: pointer;
+  transition: transform 0.12s var(--ease-standard), filter 0.12s var(--ease-standard), opacity 0.12s ease;
+}
+button:active:not(:disabled) {
+  transform: scale(0.97);
+  filter: brightness(0.92);
+}
+button:disabled {
+  cursor: not-allowed;
+}
+
+input[type="text"],
+input[type="number"] {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+input[type="text"]:focus,
+input[type="number"]:focus {
+  outline: none;
+  border-color: var(--brand-cyan) !important;
+  box-shadow: 0 0 0 3px var(--brand-cyan-dim);
+}
+
+label {
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
 .no-scrollbar::-webkit-scrollbar {
@@ -51,7 +114,7 @@ input[type="range"] {
   appearance: none;
   width: 100%;
   height: 4px;
-  background: #1e2538;
+  background: var(--border-line);
   border-radius: 2px;
   outline: none;
 }
@@ -63,8 +126,8 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 50%;
   background: var(--brand-cyan);
   cursor: pointer;
-  box-shadow: 0 0 12px rgba(0, 229, 255, 0.6);
-  border: 2px solid #050608;
+  box-shadow: var(--shadow-glow-cyan);
+  border: 2px solid var(--bg-deep);
 }
 
 @keyframes sweepLaser {
@@ -72,7 +135,6 @@ input[type="range"]::-webkit-slider-thumb {
   50% { opacity: 1; }
   100% { top: 94%; opacity: 0.5; }
 }
-
 .laser-scanner {
   animation: sweepLaser 1.8s ease-in-out infinite alternate;
 }
@@ -81,7 +143,61 @@ input[type="range"]::-webkit-slider-thumb {
   from { opacity: 0; transform: scale(0.88); }
   to { opacity: 1; transform: scale(1); }
 }
-
 .splash-anim {
-  animation: splashFadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: splashFadeIn 0.5s var(--ease-standard) forwards;
+}
+
+/* Screen-to-screen transition when switching tools/dashboard */
+@keyframes screenFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.gc-screen {
+  animation: screenFadeIn 0.28s var(--ease-standard) forwards;
+}
+
+/* Reusable surface + control classes — layered under page.js inline
+   styles so per-instance colors/sizing still vary, while radius, shadow,
+   and motion stay consistent everywhere they're used. */
+.gc-card {
+  background-color: var(--card-surface);
+  border: 1px solid var(--border-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.gc-btn-primary {
+  background: var(--brand-gradient);
+  color: #04141a;
+  border: none;
+  border-radius: var(--radius-md);
+  font-weight: 700;
+  box-shadow: var(--shadow-glow-cyan);
+}
+.gc-btn-primary:disabled {
+  background: var(--card-elevated-2);
+  color: var(--text-faint);
+  box-shadow: none;
+}
+
+.gc-btn-secondary {
+  background: var(--card-elevated);
+  color: var(--text-main);
+  border: 1px solid var(--border-glow);
+  border-radius: var(--radius-md);
+  font-weight: 700;
+}
+
+.gc-chip {
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-line);
+  background: var(--card-elevated);
+  color: var(--text-muted);
+  font-weight: 700;
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+.gc-chip[data-active="true"] {
+  border-color: var(--brand-cyan);
+  background: var(--brand-cyan-dim);
+  color: var(--brand-cyan);
 }

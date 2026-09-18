@@ -60,10 +60,10 @@ test("CF-M10: switching dock tabs away from Enhance and back leaves no frozen st
   await page.getByRole("button", { name: "Enhance Photo", exact: true }).click();
   await expect(page.getByText(/Enhanced! Sharpened, denoised/)).toBeVisible({ timeout: 15_000 });
 
-  await page.locator("footer").getByText("QR Utility").click();
-  await expect(page.getByText("Continuous QR Scanner & Creator")).toBeVisible();
+  await page.locator("footer").getByText("Scan QR", { exact: true }).click();
+  await expect(page.getByText("Continuous QR Scanner")).toBeVisible();
 
-  await page.locator("footer").getByText("Enhance Photo").click();
+  await page.locator("footer").getByText("Enhance", { exact: true }).click();
   // Tool state persists across dock switches everywhere in this app (by
   // design — e.g. Compress Files behaves the same way), so re-entering
   // shows the last result rather than resetting. What matters is that it's

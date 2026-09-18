@@ -3,9 +3,9 @@
 import { useState } from "react";
 
 const ENHANCE_LEVELS = {
-  light: { label: "Light Touch", sharpen: 0.35, clipPercent: 0.003 },
-  balanced: { label: "Balanced", sharpen: 0.65, clipPercent: 0.006 },
-  strong: { label: "Strong", sharpen: 1.0, clipPercent: 0.01 },
+  light: { label: "Light Touch", sharpen: 0.6, clipPercent: 0.008, saturation: 1.15 },
+  balanced: { label: "Balanced", sharpen: 1.0, clipPercent: 0.015, saturation: 1.3 },
+  strong: { label: "Strong", sharpen: 1.6, clipPercent: 0.025, saturation: 1.5 },
 };
 
 function boxBlur3x3(data, width, height) {
@@ -86,12 +86,27 @@ function autoContrastStretch(data, clipPercent) {
   return out;
 }
 
+/** Pushes each pixel's color away from its own luminance to boost vividness. */
+function boostSaturation(data, factor) {
+  const out = new Uint8ClampedArray(data.length);
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    out[i] = luma + (r - luma) * factor;
+    out[i + 1] = luma + (g - luma) * factor;
+    out[i + 2] = luma + (b - luma) * factor;
+    out[i + 3] = data[i + 3];
+  }
+  return out;
+}
+
 function enhanceImageData(imageData, level) {
   const { data, width, height } = imageData;
   const blurred = boxBlur3x3(data, width, height); // also acts as light denoise
   const sharpened = unsharpMask(data, blurred, level.sharpen);
   const leveled = autoContrastStretch(sharpened, level.clipPercent);
-  return new ImageData(leveled, width, height);
+  const vivid = boostSaturation(leveled, level.saturation);
+  return new ImageData(vivid, width, height);
 }
 
 export default function EnhanceImage() {
