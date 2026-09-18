@@ -4,7 +4,7 @@
 // and no 404 chunks.
 const { test, expect } = require("@playwright/test");
 
-const ROUTES = ["/", "/about", "/privacy", "/compress-image", "/compress-pdf", "/convert-files", "/enhance-image"];
+const ROUTES = ["/", "/about", "/privacy", "/compress-image", "/compress-pdf", "/convert-files", "/enhance-image", "/sign-document"];
 
 for (const route of ROUTES) {
   test(`CF-W01: ${route} loads with 200, metadata, header, and no 404 chunks`, async ({ page }) => {

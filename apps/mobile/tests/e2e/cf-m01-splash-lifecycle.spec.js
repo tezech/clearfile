@@ -18,8 +18,8 @@ test("CF-M01: splash shows on cold launch, then fully unmounts into the dashboar
   expect(await page.$(".splash-anim")).toBeNull();
 
   // Touch focus reaches the dashboard: dock icons and tool cards respond.
-  await expect(page.getByText("System Applications")).toBeVisible();
+  await expect(page.getByText("Tools", { exact: true })).toBeVisible();
   await expect(page.locator("main").getByText("Doc Scanner")).toBeVisible();
   await page.locator("main").getByText("Doc Scanner").click();
-  await expect(page.getByText("Open Camera Viewfinder")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("Open camera", { exact: true })).toBeVisible({ timeout: 10_000 });
 });

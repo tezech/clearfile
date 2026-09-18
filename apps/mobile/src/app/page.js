@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect } from "react";
 import { PDFDocument, rgb } from "pdf-lib";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
@@ -8,6 +8,7 @@ import { Browser } from "@capacitor/browser";
 import jsQR from "jsqr";
 import QRCode from "qrcode";
 import JSZip from "jszip";
+import { Card, Button, Chip, UploadDropzone, ResultBanner, ToolTitle } from "../components/ui";
 
 export default function ClearfileApexEngine() {
   const [showSplash, setShowSplash] = useState(true);
@@ -121,18 +122,21 @@ export default function ClearfileApexEngine() {
   ];
 
   /**
-   * Heuristic auto edge-detection: downscales the frame, runs a Sobel
-   * gradient-magnitude pass, then finds the axis-aligned box whose row/
-   * column edge-strength projections cross a threshold. This isn't full
-   * perspective contour fitting (a genuinely rotated/skewed page won't be
-   * caught precisely) — it's a fast, dependency-free approximation that
-   * handles the common case (a document roughly facing the camera against
-   * a plainer background). Returns null when the frame doesn't have a
-   * confident, non-degenerate edge box, so callers can fall back to the
-   * manual default corners.
+   * Heuristic auto edge-detection: downscales the frame, blurs it slightly
+   * to suppress sensor/JPEG noise, runs a Sobel gradient-magnitude pass,
+   * then finds the axis-aligned box whose row/column edge-strength
+   * projections cross a threshold set from the gradient distribution's
+   * 92nd percentile (robust to a single bright outlier like a reflection —
+   * a "% of the single maximum" threshold, used previously, is easily
+   * skewed by one bright pixel and was rejecting nearly every real camera
+   * photo). This isn't full perspective contour fitting (a genuinely
+   * rotated/skewed page won't be caught precisely) — it's a fast,
+   * dependency-free approximation for a document roughly facing the
+   * camera. Returns null only when the frame truly has no discernible
+   * structure, so callers can fall back to the manual default corners.
    */
   const detectDocumentCorners = (sourceCanvas) => {
-    const maxDim = 300;
+    const maxDim = 320;
     const scale = Math.min(1, maxDim / Math.max(sourceCanvas.width, sourceCanvas.height));
     const w = Math.max(3, Math.round(sourceCanvas.width * scale));
     const h = Math.max(3, Math.round(sourceCanvas.height * scale));
@@ -149,29 +153,47 @@ export default function ClearfileApexEngine() {
       gray[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
     }
 
+    const blurred = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let sum = 0;
+        let count = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= h) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx;
+            if (nx < 0 || nx >= w) continue;
+            sum += gray[ny * w + nx];
+            count++;
+          }
+        }
+        blurred[y * w + x] = sum / count;
+      }
+    }
+
     const mag = new Float32Array(w * h);
-    let maxMag = 0;
     for (let y = 1; y < h - 1; y++) {
       for (let x = 1; x < w - 1; x++) {
         const i = y * w + x;
         const gx =
-          -gray[i - w - 1] + gray[i - w + 1] - 2 * gray[i - 1] + 2 * gray[i + 1] - gray[i + w - 1] + gray[i + w + 1];
+          -blurred[i - w - 1] + blurred[i - w + 1] - 2 * blurred[i - 1] + 2 * blurred[i + 1] - blurred[i + w - 1] + blurred[i + w + 1];
         const gy =
-          -gray[i - w - 1] - 2 * gray[i - w] - gray[i - w + 1] + gray[i + w - 1] + 2 * gray[i + w] + gray[i + w + 1];
-        const m = Math.sqrt(gx * gx + gy * gy);
-        mag[i] = m;
-        if (m > maxMag) maxMag = m;
+          -blurred[i - w - 1] - 2 * blurred[i - w] - blurred[i - w + 1] + blurred[i + w - 1] + 2 * blurred[i + w] + blurred[i + w + 1];
+        mag[i] = Math.sqrt(gx * gx + gy * gy);
       }
     }
-    if (maxMag < 20) return null; // essentially flat frame, nothing to detect
+
+    const sorted = Float32Array.from(mag).sort();
+    const strongEdge = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.92))];
+    if (strongEdge < 6) return null; // essentially no discernible structure in frame
 
     const rowSum = new Float32Array(h);
     const colSum = new Float32Array(w);
-    const edgeThreshold = maxMag * 0.25;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const m = mag[y * w + x];
-        if (m > edgeThreshold) {
+        if (m > strongEdge) {
           rowSum[y] += m;
           colSum[x] += m;
         }
@@ -181,7 +203,7 @@ export default function ClearfileApexEngine() {
     const findBound = (arr, fromStart) => {
       const peak = Math.max(...arr);
       if (peak <= 0) return fromStart ? 0 : arr.length - 1;
-      const cutoff = peak * 0.15;
+      const cutoff = peak * 0.1;
       if (fromStart) {
         for (let i = 0; i < arr.length; i++) if (arr[i] >= cutoff) return i;
         return 0;
@@ -199,10 +221,10 @@ export default function ClearfileApexEngine() {
     const boxHeightPct = ((bottom - top) / h) * 100;
     // Reject boxes too small to be a real document, or so close to the
     // full frame that auto-detection offers nothing over the default.
-    if (boxWidthPct < 30 || boxHeightPct < 30) return null;
-    if (boxWidthPct > 98 && boxHeightPct > 98) return null;
+    if (boxWidthPct < 15 || boxHeightPct < 15) return null;
+    if (boxWidthPct > 99 && boxHeightPct > 99) return null;
 
-    const toPct = (v, dim) => Math.min(96, Math.max(4, Math.round((v / dim) * 100)));
+    const toPct = (v, dim) => Math.min(97, Math.max(3, Math.round((v / dim) * 100)));
     return [
       { x: toPct(left, w), y: toPct(top, h) },
       { x: toPct(right, w), y: toPct(top, h) },
@@ -333,6 +355,16 @@ export default function ClearfileApexEngine() {
   const [isPdfDocument, setIsPdfDocument] = useState(false);
   const [docFileName, setDocFileName] = useState("");
   const [docPreviewUrl, setDocPreviewUrl] = useState(null);
+  // width/height of the actual document page — the preview box is sized in
+  // explicit pixels (see previewSize effect below) to this exact ratio so
+  // the image fills it with no letterboxing, which is what makes tap
+  // position == final sign position. (CSS aspect-ratio combined with a
+  // max-height clamp doesn't reliably shrink width to match — it can leave
+  // the box full-width with a clipped height, silently reintroducing the
+  // exact letterbox mismatch this is meant to prevent.)
+  const [docAspectRatio, setDocAspectRatio] = useState(8.5 / 11);
+  const [signPreviewSize, setSignPreviewSize] = useState({ width: 0, height: 0 });
+  const signPreviewWrapRef = useRef(null);
   const [signatureTransparentUrl, setSignatureTransparentUrl] = useState(null);
   const [sigCoordinates, setSigCoordinates] = useState({ x: 50, y: 80 });
   const [attachSecuritySeal, setAttachSecuritySeal] = useState(false);
@@ -340,6 +372,24 @@ export default function ClearfileApexEngine() {
   const [inkColor, setInkColor] = useState("#000000");
   const sigCanvasRef = useRef(null);
   const [isDrawingSig, setIsDrawingSig] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!docPreviewUrl || !signPreviewWrapRef.current) return;
+    const recompute = () => {
+      const maxWidth = signPreviewWrapRef.current.clientWidth;
+      const maxHeight = window.innerHeight * 0.6;
+      let width = maxWidth;
+      let height = width / docAspectRatio;
+      if (height > maxHeight) {
+        height = maxHeight;
+        width = height * docAspectRatio;
+      }
+      setSignPreviewSize({ width, height });
+    };
+    recompute();
+    window.addEventListener("resize", recompute);
+    return () => window.removeEventListener("resize", recompute);
+  }, [docPreviewUrl, docAspectRatio]);
 
   const handleDocumentPickForSign = async (e) => {
     const file = e.target.files?.[0];
@@ -375,6 +425,7 @@ export default function ClearfileApexEngine() {
         const ctx = canvas.getContext("2d");
         await page.render({ canvasContext: ctx, viewport }).promise;
 
+        setDocAspectRatio(viewport.width / viewport.height);
         setDocPreviewUrl(canvas.toDataURL("image/jpeg", 0.92));
         notify("PDF loaded. Tap exactly where you want to sign.");
       } catch (err) {
@@ -388,9 +439,14 @@ export default function ClearfileApexEngine() {
       setIsPdfDocument(false);
       const reader = new FileReader();
       reader.onload = (ev) => {
-        setDocPreviewUrl(ev.target.result);
-        setDocToSignBytes(ev.target.result);
-        notify("Document image ready.");
+        const img = new Image();
+        img.onload = () => {
+          setDocAspectRatio(img.naturalWidth / img.naturalHeight);
+          setDocPreviewUrl(ev.target.result);
+          setDocToSignBytes(ev.target.result);
+          notify("Document image ready. Tap exactly where you want to sign.");
+        };
+        img.src = ev.target.result;
       };
       reader.readAsDataURL(file);
     }
@@ -994,25 +1050,46 @@ export default function ClearfileApexEngine() {
     }
   };
 
-  /** Surfaces a decoded value for user confirmation instead of opening it immediately. */
+  const openLinkInBrowser = async (url) => {
+    try {
+      await Browser.open({ url });
+    } catch (err) {
+      window.open(url, "_system");
+    }
+  };
+
+  /**
+   * A clean link (no red flags from assessLinkRisk) redirects right away —
+   * scanning a QR code is meant to be a one-tap action, and interrupting
+   * every single scan for confirmation would just train people to tap
+   * "Open" without reading it, defeating the point. The confirmation panel
+   * only appears when the safety check actually found something worth a
+   * second look (unencrypted HTTP, a raw IP, a spoofing trick, etc). Plain
+   * text (not a link at all) never triggers either path.
+   */
   const presentDecodedValue = (value) => {
     setQrDecodedValue(value);
-    if (value.startsWith("http://") || value.startsWith("https://")) {
-      setQrPendingLink({ url: value, risk: assessLinkRisk(value) });
-    } else {
+    if (!value.startsWith("http://") && !value.startsWith("https://")) {
       setQrPendingLink(null);
+      return "text";
     }
+
+    const risk = assessLinkRisk(value);
+    if (risk.level === "safe") {
+      setQrPendingLink(null);
+      openLinkInBrowser(value);
+      return "opened";
+    }
+
+    setQrPendingLink({ url: value, risk });
+    return "needs-confirmation";
   };
 
   const confirmOpenQrLink = async () => {
     if (!qrPendingLink) return;
     const { url } = qrPendingLink;
     setQrPendingLink(null);
-    try {
-      await Browser.open({ url });
-    } catch (err) {
-      window.open(url, "_system");
-    }
+    await openLinkInBrowser(url);
   };
 
   const dismissQrLink = () => setQrPendingLink(null);
@@ -1061,8 +1138,10 @@ export default function ClearfileApexEngine() {
 
     if (code) {
       stopQrLiveScanning();
-      presentDecodedValue(code.data);
-      notify("QR Code Found! Review before opening.");
+      const outcome = presentDecodedValue(code.data);
+      if (outcome === "needs-confirmation") notify("QR Code Found! Review before opening.");
+      else if (outcome === "opened") notify("QR Code Found! Opening link...");
+      else notify("QR Code Found!");
     } else {
       qrAnimRef.current = requestAnimationFrame(tickQrScanning);
     }
@@ -1083,8 +1162,10 @@ export default function ClearfileApexEngine() {
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const code = jsQR(imgData.data, canvas.width, canvas.height);
         if (code) {
-          presentDecodedValue(code.data);
-          notify("QR detected! Review before opening.");
+          const outcome = presentDecodedValue(code.data);
+          if (outcome === "needs-confirmation") notify("QR detected! Review before opening.");
+          else if (outcome === "opened") notify("QR detected! Opening link...");
+          else notify("QR detected!");
         } else {
           alert("No QR code detected in this photo.");
         }
@@ -1163,58 +1244,27 @@ export default function ClearfileApexEngine() {
   ];
 
   return (
-    <div style={{
-      height: "100vh",
-      width: "100vw",
-      backgroundColor: "var(--bg-deep)",
-      color: "var(--text-main)",
-      display: "flex",
-      flexDirection: "column",
-      overflow: "hidden"
-    }}>
+    <div className="h-screen w-screen bg-bg-deep text-ink flex flex-col overflow-hidden">
 
       {/* 1. AUTO-DISMISS SPLASH SCREEN (1.8s) */}
       {showSplash && (
-        <div style={{
-          position: "fixed",
-          inset: 0,
-          zIndex: 9999,
-          backgroundColor: "var(--bg-deep)",
-          backgroundImage: "radial-gradient(circle at 50% 42%, rgba(0,229,255,0.12), transparent 60%)",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: "24px"
-        }}>
-          <div className="splash-anim" style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-            <div style={{
-              width: "112px",
-              height: "112px",
-              borderRadius: "28px",
-              overflow: "hidden",
-              border: "1.5px solid rgba(0, 229, 255, 0.4)",
-              boxShadow: "0 0 60px rgba(0, 229, 255, 0.3)",
-              backgroundColor: "var(--card-surface)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center"
-            }}>
-              <img src="/logo.png" alt="Clearfile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <div
+          className="fixed inset-0 z-[9999] bg-bg-deep flex flex-col items-center justify-center p-6"
+          style={{ backgroundImage: "radial-gradient(circle at 50% 42%, rgba(0,229,255,0.12), transparent 60%)" }}
+        >
+          <div className="splash-anim flex flex-col items-center">
+            <div className="w-28 h-28 rounded-[28px] overflow-hidden border border-cyan/40 bg-surface flex items-center justify-center shadow-[0_0_60px_rgba(0,229,255,0.3)]">
+              <img src="/logo.png" alt="Clearfile" className="w-full h-full object-cover" />
             </div>
-            <div style={{ marginTop: "26px", textAlign: "center" }}>
-              <div style={{
-                fontSize: "34px",
-                fontWeight: "800",
-                letterSpacing: "-0.7px",
-                background: "var(--brand-gradient)",
-                WebkitBackgroundClip: "text",
-                WebkitTextFillColor: "transparent"
-              }}>
+            <div className="mt-7 text-center">
+              <div
+                className="text-4xl font-extrabold tracking-tight bg-clip-text text-transparent"
+                style={{ backgroundImage: "linear-gradient(135deg, var(--color-cyan) 0%, var(--color-blue) 55%, var(--color-violet) 100%)" }}
+              >
                 clearfile
               </div>
-              <div style={{ fontSize: "11px", color: "var(--text-muted)", letterSpacing: "2px", textTransform: "uppercase", marginTop: "8px", fontWeight: "600" }}>
-                Autonomous Document Protocol
+              <div className="text-[11px] text-ink-muted tracking-[0.15em] uppercase mt-2 font-semibold">
+                Private document toolkit
               </div>
             </div>
           </div>
@@ -1222,17 +1272,8 @@ export default function ClearfileApexEngine() {
       )}
 
       {/* 2. TOP APP HEADER WITH BACK NAVIGATION */}
-      <header style={{
-        flexShrink: 0,
-        backgroundColor: "rgba(15,18,25,0.9)",
-        backdropFilter: "blur(10px)",
-        borderBottom: "1px solid var(--border-line)",
-        padding: "14px 18px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between"
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+      <header className="shrink-0 bg-[#0f1219]/90 backdrop-blur-md border-b border-line px-4.5 py-3.5 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
           {activeTool ? (
             <button
               onClick={() => {
@@ -1244,429 +1285,245 @@ export default function ClearfileApexEngine() {
                 setRawCapturedImage(null);
                 setActiveTool(null);
               }}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                background: "var(--brand-cyan-dim)",
-                border: "1px solid rgba(0, 229, 255, 0.25)",
-                color: "var(--brand-cyan)",
-                padding: "7px 13px",
-                borderRadius: "var(--radius-pill)",
-                fontSize: "12px",
-                fontWeight: "700"
-              }}
+              className="flex items-center gap-1.5 bg-cyan/10 border border-cyan/25 text-cyan px-3.5 py-1.5 rounded-full text-xs font-bold"
             >
               <Icons.Back /> Back
             </button>
           ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <div style={{ width: "34px", height: "34px", borderRadius: "10px", overflow: "hidden", border: "1px solid rgba(0, 229, 255, 0.3)", backgroundColor: "var(--card-surface)" }}>
-                <img src="/logo.png" alt="Clearfile" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <div className="flex items-center gap-2.5">
+              <div className="w-8.5 h-8.5 rounded-[10px] overflow-hidden border border-cyan/30 bg-surface">
+                <img src="/logo.png" alt="Clearfile" className="w-full h-full object-cover" />
               </div>
-              <div>
-                <div style={{ fontSize: "16px", fontWeight: "800", letterSpacing: "-0.3px" }}>clearfile</div>
-                <div style={{ fontSize: "9px", color: "var(--text-muted)", letterSpacing: "1.2px", textTransform: "uppercase", fontWeight: "600" }}>Apex Hub</div>
-              </div>
+              <div className="text-[17px] font-extrabold tracking-tight">clearfile</div>
             </div>
           )}
         </div>
 
-        <span style={{ fontSize: "10px", color: "var(--brand-cyan)", background: "var(--brand-cyan-dim)", border: "1px solid rgba(0,229,255,0.25)", padding: "5px 10px", borderRadius: "var(--radius-pill)", fontWeight: "700", letterSpacing: "0.4px" }}>
-          {activeTool ? TOOLS.find((t) => t.id === activeTool)?.badge ?? activeTool.toUpperCase() : "OFFLINE KERNEL"}
+        <span className="text-[10px] text-cyan bg-cyan/10 border border-cyan/25 px-2.5 py-1.5 rounded-full font-bold tracking-wide">
+          {activeTool ? TOOLS.find((t) => t.id === activeTool)?.badge ?? activeTool.toUpperCase() : "PRIVATE & OFFLINE"}
         </span>
       </header>
 
       {/* TOAST SYSTEM */}
       {toastMsg && (
-        <div style={{ backgroundColor: "var(--brand-cyan)", color: "#04141a", fontSize: "11px", fontWeight: "700", textAlign: "center", padding: "8px", letterSpacing: "0.2px" }}>
+        <div className="bg-cyan text-[#04141a] text-[11px] font-bold text-center py-2 px-3">
           {toastMsg}
         </div>
       )}
 
       {/* 3. MAIN WORKSPACE */}
-      <main style={{
-        flex: 1,
-        overflowY: "auto",
-        padding: "16px",
-        maxWidth: "540px",
-        width: "100%",
-        margin: "0 auto",
-        boxSizing: "border-box"
-      }} className="no-scrollbar">
+      <main className="no-scrollbar flex-1 overflow-y-auto p-4 max-w-[540px] w-full mx-auto box-border">
 
         {/* HOME DASHBOARD */}
         {activeTool === null && (
-          <div key="dashboard" className="gc-screen" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            <div style={{ padding: "8px 4px 4px", fontSize: "13px", fontWeight: "800", color: "var(--brand-cyan)", textTransform: "uppercase", letterSpacing: "1.2px" }}>
-              System Applications
+          <div key="dashboard" className="gc-screen flex flex-col gap-3">
+            <div className="px-1 pt-2 pb-1 text-[13px] font-extrabold text-cyan uppercase tracking-[0.1em]">
+              Tools
             </div>
             {TOOLS.map((tool) => {
               const IconComp = tool.icon;
               return (
-                <button
-                  key={tool.id}
-                  onClick={() => setActiveTool(tool.id)}
-                  className="gc-card"
-                  style={{
-                    padding: "16px",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "16px",
-                    textAlign: "left",
-                    width: "100%",
-                    color: "inherit"
-                  }}
-                >
-                  <div style={{
-                    width: "46px",
-                    height: "46px",
-                    flexShrink: 0,
-                    borderRadius: "var(--radius-md)",
-                    background: hexToRgba(tool.accent, 0.12),
-                    border: `1px solid ${hexToRgba(tool.accent, 0.35)}`,
-                    color: tool.accent,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center"
-                  }}>
+                <Card key={tool.id} as="button" onClick={() => setActiveTool(tool.id)} className="p-4 flex items-center gap-4 text-left w-full text-inherit">
+                  <div
+                    className="w-11.5 h-11.5 shrink-0 rounded-xl flex items-center justify-center"
+                    style={{ background: hexToRgba(tool.accent, 0.12), border: `1px solid ${hexToRgba(tool.accent, 0.35)}`, color: tool.accent }}
+                  >
                     <IconComp />
                   </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: "15px", fontWeight: "800", color: "var(--text-main)" }}>{tool.label}</div>
-                    <div style={{ fontSize: "11.5px", color: "var(--text-muted)", marginTop: "2px", lineHeight: 1.4 }}>{tool.desc}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[15px] font-extrabold text-ink">{tool.label}</div>
+                    <div className="text-[11.5px] text-ink-muted mt-0.5 leading-snug">{tool.desc}</div>
                   </div>
-                  <div style={{ color: "var(--text-faint)", fontSize: "18px", flexShrink: 0 }}>&rarr;</div>
-                </button>
+                  <div className="text-ink-faint text-lg shrink-0">&rarr;</div>
+                </Card>
               );
             })}
           </div>
         )}
 
-        {/* TOOL 1: 4-CORNER PERSPECTIVE WARP SCANNER */}
+        {/* TOOL 1: DOCUMENT SCANNER */}
         {activeTool === "scan" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            <div className="gc-card gc-screen" style={{ padding: "18px" }}>
-              <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase", marginBottom: "12px" }}>
-                Homography Perspective Document Scanner
-              </div>
+          <div className="gc-screen rounded-[20px] border border-line bg-surface shadow-[0_10px_30px_-6px_rgba(0,0,0,0.45)] p-4.5">
+            <ToolTitle>Document Scanner</ToolTitle>
 
-              {isCameraActive && (
-                <div style={{ position: "relative", width: "100%", height: "400px", borderRadius: "14px", overflow: "hidden", backgroundColor: "#000", marginBottom: "14px" }}>
-                  <video ref={scanVideoRef} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  <button
-                    onClick={captureCameraFrame}
-                    style={{
-                      position: "absolute",
-                      bottom: "20px",
-                      left: "50%",
-                      transform: "translateX(-50%)",
-                      padding: "14px 32px",
-                      borderRadius: "30px",
-                      background: "#00e5ff",
-                      color: "#050608",
-                      fontWeight: "bold",
-                      border: "none",
-                      fontSize: "13px",
-                      boxShadow: "0 0 25px rgba(0, 229, 255, 0.5)",
-                      cursor: "pointer"
-                    }}
-                  >
-                    SNAP DOCUMENT
-                  </button>
-                </div>
-              )}
-
-              {rawCapturedImage && !inspectedPage && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                  <div style={{ fontSize: "11px", color: "#00e5ff" }}>Drag the 4 corner handles to isolate the skewed page:</div>
-                  <div
-                    ref={cropWrapperRef}
-                    onMouseMove={handleTouchCornerMove}
-                    onTouchMove={handleTouchCornerMove}
-                    onMouseUp={() => setDraggingCorner(null)}
-                    onTouchEnd={() => setDraggingCorner(null)}
-                    style={{
-                      position: "relative",
-                      width: "100%",
-                      height: "320px",
-                      backgroundColor: "#000",
-                      borderRadius: "14px",
-                      overflow: "hidden",
-                      touchAction: "none"
-                    }}
-                  >
-                    <img src={rawCapturedImage} alt="Raw" style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none" }} />
-
-                    <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}>
-                      <polygon
-                        points={`${corners[0].x}%,${corners[0].y}% ${corners[1].x}%,${corners[1].y}% ${corners[2].x}%,${corners[2].y}% ${corners[3].x}%,${corners[3].y}%`}
-                        fill="rgba(0, 229, 255, 0.18)"
-                        stroke="#00e5ff"
-                        strokeWidth="2.5"
-                      />
-                    </svg>
-
-                    {corners.map((c, idx) => (
-                      <div
-                        key={idx}
-                        onMouseDown={() => setDraggingCorner(idx)}
-                        onTouchStart={() => setDraggingCorner(idx)}
-                        style={{
-                          position: "absolute",
-                          left: `${c.x}%`,
-                          top: `${c.y}%`,
-                          transform: "translate(-50%, -50%)",
-                          width: "38px",
-                          height: "38px",
-                          borderRadius: "50%",
-                          background: "rgba(0, 229, 255, 0.4)",
-                          border: "2px solid #ffffff",
-                          boxShadow: "0 0 12px #00e5ff",
-                          cursor: "grab",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center"
-                        }}
-                      >
-                        <div style={{ width: "12px", height: "12px", borderRadius: "50%", background: "#00e5ff" }} />
-                      </div>
-                    ))}
-                  </div>
-
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    {[
-                      { id: "magic", label: "Magic Color" },
-                      { id: "bw", label: "Crisp B&W" },
-                      { id: "color", label: "Original" }
-                    ].map((f) => (
-                      <button
-                        key={f.id}
-                        onClick={() => setScanFilter(f.id)}
-                        style={{
-                          flex: 1,
-                          padding: "8px 0",
-                          borderRadius: "8px",
-                          border: scanFilter === f.id ? "1px solid #00e5ff" : "1px solid #222638",
-                          background: scanFilter === f.id ? "rgba(0, 229, 255, 0.15)" : "#131622",
-                          color: scanFilter === f.id ? "#00e5ff" : "#8492a6",
-                          fontSize: "11px",
-                          fontWeight: "bold"
-                        }}
-                      >
-                        {f.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <button
-                    onClick={executePerspectiveWarp}
-                    style={{
-                      padding: "14px",
-                      borderRadius: "12px",
-                      background: "#00e5ff",
-                      color: "#050608",
-                      fontWeight: "bold",
-                      border: "none",
-                      fontSize: "13px"
-                    }}
-                  >
-                    Warp Perspective & Preview →
-                  </button>
-                </div>
-              )}
-
-              {inspectedPage && (
-                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                  <div style={{ fontSize: "12px", color: "#10b981", fontWeight: "bold" }}>
-                    ✓ Inspection Studio (Review Straightened Document):
-                  </div>
-                  <div style={{ width: "100%", height: "300px", borderRadius: "12px", overflow: "hidden", backgroundColor: "#000", border: "1px solid #10b981" }}>
-                    <img src={inspectedPage} alt="Warped" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                    <button
-                      onClick={() => setInspectedPage(null)}
-                      style={{
-                        padding: "12px",
-                        borderRadius: "10px",
-                        background: "#151824",
-                        border: "1px solid #2a314d",
-                        color: "#f8fafc",
-                        fontSize: "12px",
-                        fontWeight: "bold"
-                      }}
-                    >
-                      ↺ Re-Adjust Corners
-                    </button>
-                    <button
-                      onClick={acceptScannedPage}
-                      style={{
-                        padding: "12px",
-                        borderRadius: "10px",
-                        background: "#00e5ff",
-                        color: "#050608",
-                        fontSize: "12px",
-                        fontWeight: "bold",
-                        border: "none"
-                      }}
-                    >
-                      ✓ Accept Page
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {!isCameraActive && !rawCapturedImage && !inspectedPage && (
+            {isCameraActive && (
+              <div className="relative w-full h-[400px] rounded-2xl overflow-hidden bg-black mb-3.5">
+                <video ref={scanVideoRef} className="w-full h-full object-cover" />
                 <button
-                  onClick={startScanCamera}
-                  style={{
-                    width: "100%",
-                    padding: "16px",
-                    borderRadius: "14px",
-                    background: "#00e5ff",
-                    color: "#050608",
-                    fontSize: "13px",
-                    fontWeight: "bold",
-                    border: "none",
-                    cursor: "pointer",
-                    textTransform: "uppercase"
-                  }}
+                  onClick={captureCameraFrame}
+                  className="absolute bottom-5 left-1/2 -translate-x-1/2 px-8 py-3.5 rounded-full bg-cyan text-[#050608] font-bold text-[13px] shadow-[0_0_25px_rgba(0,229,255,0.5)]"
                 >
-                  Open Camera Viewfinder
+                  Capture
                 </button>
-              )}
+              </div>
+            )}
 
-              {scannedStack.length > 0 && !isCameraActive && !rawCapturedImage && !inspectedPage && (
-                <div style={{ marginTop: "18px", display: "flex", flexDirection: "column", gap: "10px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12px", color: "#8492a6" }}>
-                    <span>Document Pages ({scannedStack.length})</span>
-                    <span style={{ color: "#ef4444", cursor: "pointer" }} onClick={() => setScannedStack([])}>Clear Stack</span>
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "8px" }}>
-                    {scannedStack.map((pg, i) => (
-                      <img key={i} src={pg} alt="Pg" style={{ width: "100%", height: "110px", objectFit: "cover", borderRadius: "8px", border: "1px solid #222638" }} />
-                    ))}
-                  </div>
-                  <button
-                    onClick={exportScannedPDF}
-                    style={{
-                      padding: "14px",
-                      borderRadius: "12px",
-                      background: "#151824",
-                      border: "1px solid #00e5ff",
-                      color: "#00e5ff",
-                      fontSize: "13px",
-                      fontWeight: "bold",
-                      marginTop: "6px"
-                    }}
-                  >
-                    Export Multi-Page Document to Phone 💾
-                  </button>
+            {rawCapturedImage && !inspectedPage && (
+              <div className="flex flex-col gap-3">
+                <div className="text-[11px] text-cyan">We&apos;ve outlined the page — drag any corner to fine-tune:</div>
+                <div
+                  ref={cropWrapperRef}
+                  data-testid="crop-container"
+                  onMouseMove={handleTouchCornerMove}
+                  onTouchMove={handleTouchCornerMove}
+                  onMouseUp={() => setDraggingCorner(null)}
+                  onTouchEnd={() => setDraggingCorner(null)}
+                  className="relative w-full h-80 bg-black rounded-2xl overflow-hidden touch-none"
+                >
+                  <img src={rawCapturedImage} alt="Raw" className="w-full h-full object-contain pointer-events-none" />
+
+                  <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                    <polygon
+                      points={`${corners[0].x}%,${corners[0].y}% ${corners[1].x}%,${corners[1].y}% ${corners[2].x}%,${corners[2].y}% ${corners[3].x}%,${corners[3].y}%`}
+                      fill="rgba(0, 229, 255, 0.18)"
+                      stroke="#00e5ff"
+                      strokeWidth="2.5"
+                    />
+                  </svg>
+
+                  {corners.map((c, idx) => (
+                    <div
+                      key={idx}
+                      data-testid="corner-pin"
+                      onMouseDown={() => setDraggingCorner(idx)}
+                      onTouchStart={() => setDraggingCorner(idx)}
+                      className="absolute w-9.5 h-9.5 rounded-full bg-cyan/40 border-2 border-white shadow-[0_0_12px_#00e5ff] cursor-grab flex items-center justify-center"
+                      style={{ left: `${c.x}%`, top: `${c.y}%`, transform: "translate(-50%, -50%)" }}
+                    >
+                      <div className="w-3 h-3 rounded-full bg-cyan" />
+                    </div>
+                  ))}
                 </div>
-              )}
-            </div>
+
+                <div className="flex gap-2">
+                  {[
+                    { id: "magic", label: "Enhance" },
+                    { id: "bw", label: "Black & White" },
+                    { id: "color", label: "Original" }
+                  ].map((f) => (
+                    <Chip key={f.id} active={scanFilter === f.id} onClick={() => setScanFilter(f.id)} className="flex-1">
+                      {f.label}
+                    </Chip>
+                  ))}
+                </div>
+
+                <Button onClick={executePerspectiveWarp}>Straighten &amp; preview</Button>
+              </div>
+            )}
+
+            {inspectedPage && (
+              <div className="flex flex-col gap-3">
+                <div className="text-[12px] text-green font-bold">Review your scan</div>
+                <div className="w-full h-[300px] rounded-xl overflow-hidden bg-black border border-green/40">
+                  <img src={inspectedPage} alt="Warped" className="w-full h-full object-contain" />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <Button variant="secondary" onClick={() => setInspectedPage(null)}>Adjust corners</Button>
+                  <Button onClick={acceptScannedPage}>Use this page</Button>
+                </div>
+              </div>
+            )}
+
+            {!isCameraActive && !rawCapturedImage && !inspectedPage && (
+              <Button onClick={startScanCamera}>Open camera</Button>
+            )}
+
+            {scannedStack.length > 0 && !isCameraActive && !rawCapturedImage && !inspectedPage && (
+              <div className="mt-4.5 flex flex-col gap-2.5">
+                <div className="flex justify-between text-[12px] text-ink-muted">
+                  <span>Pages captured ({scannedStack.length})</span>
+                  <button className="text-red" onClick={() => setScannedStack([])}>Clear all</button>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {scannedStack.map((pg, i) => (
+                    <img key={i} src={pg} alt="Pg" className="w-full h-[110px] object-cover rounded-lg border border-line" />
+                  ))}
+                </div>
+                <Button variant="secondary" onClick={exportScannedPDF} className="mt-1.5 border-cyan/40 text-cyan">
+                  Save as PDF
+                </Button>
+              </div>
+            )}
           </div>
         )}
 
         {/* TOOL 2: DOCUMENT SIGNER */}
         {activeTool === "sign" && (
-          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
-            <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
-              Transparent Signature on Live Document
-            </div>
+          <div className="gc-screen rounded-[20px] border border-line bg-surface shadow-[0_10px_30px_-6px_rgba(0,0,0,0.45)] p-4.5 flex flex-col gap-3.5">
+            <ToolTitle>Sign Document</ToolTitle>
 
             {!docToSignBytes ? (
-              <label style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                border: "2px dashed #262b3d",
-                borderRadius: "14px",
-                padding: "36px 16px",
-                cursor: "pointer",
-                backgroundColor: "#111420"
-              }}>
-                <div style={{ color: "#00d4ff", marginBottom: "8px" }}><Icons.Signature /></div>
-                <span style={{ fontSize: "14px", fontWeight: "600" }}>Upload Document (PDF, PNG, JPG)</span>
-                <span style={{ fontSize: "10px", color: "#8492a6", marginTop: "4px" }}>Supports multi-page contracts & forms</span>
-                <input type="file" accept="application/pdf,image/*" onChange={handleDocumentPickForSign} style={{ display: "none" }} />
-              </label>
+              <UploadDropzone
+                icon={<Icons.Signature />}
+                title="Upload document (PDF, PNG, JPG)"
+                subtitle="Multi-page contracts and forms are supported"
+              >
+                <input type="file" accept="application/pdf,image/*" onChange={handleDocumentPickForSign} className="hidden" />
+              </UploadDropzone>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", background: "#131622", padding: "10px", borderRadius: "8px", fontSize: "12px" }}>
-                  <span>{docFileName}</span>
-                  <label style={{ color: "#00d4ff", cursor: "pointer" }}>
+              <div className="flex flex-col gap-3">
+                <div className="flex justify-between items-center bg-surface-2 px-2.5 py-2 rounded-lg text-xs">
+                  <span className="truncate">{docFileName}</span>
+                  <label className="text-cyan cursor-pointer shrink-0 ml-2">
                     Change
-                    <input type="file" accept="application/pdf,image/*" onChange={handleDocumentPickForSign} style={{ display: "none" }} />
+                    <input type="file" accept="application/pdf,image/*" onChange={handleDocumentPickForSign} className="hidden" />
                   </label>
                 </div>
 
-                <div
-                  onClick={(e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    const x = ((e.clientX - rect.left) / rect.width) * 100;
-                    const y = ((e.clientY - rect.top) / rect.height) * 100;
-                    setSigCoordinates({ x, y });
-                  }}
-                  style={{
-                    position: "relative",
-                    width: "100%",
-                    height: "280px",
-                    backgroundColor: "#ffffff",
-                    borderRadius: "12px",
-                    overflow: "hidden",
-                    cursor: "crosshair",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    border: "1px solid #2a314d"
-                  }}
-                >
-                  <img src={docPreviewUrl} alt="Doc" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+                {/* Explicitly sized in pixels (see signPreviewSize effect)
+                    to match the real document's aspect ratio exactly, so
+                    the preview fills edge-to-edge with zero letterboxing —
+                    that's what makes a tap position here match the final
+                    signed position exactly. */}
+                <div ref={signPreviewWrapRef} className="w-full flex justify-center">
+                  <div
+                    onClick={(e) => {
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const x = ((e.clientX - rect.left) / rect.width) * 100;
+                      const y = ((e.clientY - rect.top) / rect.height) * 100;
+                      setSigCoordinates({ x, y });
+                    }}
+                    className="relative bg-white rounded-xl overflow-hidden cursor-crosshair border border-line-glow"
+                    style={{ width: signPreviewSize.width || "100%", height: signPreviewSize.height || 280 }}
+                  >
+                    <img src={docPreviewUrl} alt="Doc" className="w-full h-full object-contain" />
 
-                  {signatureTransparentUrl && (
-                    <img
-                      src={signatureTransparentUrl}
-                      alt="Signature"
-                      style={{
-                        position: "absolute",
-                        top: `${sigCoordinates.y}%`,
-                        left: `${sigCoordinates.x}%`,
-                        transform: "translate(-50%, -50%)",
-                        width: attachSecuritySeal ? "140px" : "110px",
-                        pointerEvents: "none"
-                      }}
-                    />
-                  )}
+                    {signatureTransparentUrl && (
+                      <img
+                        src={signatureTransparentUrl}
+                        alt="Signature"
+                        className="absolute pointer-events-none"
+                        style={{
+                          top: `${sigCoordinates.y}%`,
+                          left: `${sigCoordinates.x}%`,
+                          transform: "translate(-50%, -50%)",
+                          width: attachSecuritySeal ? "140px" : "110px",
+                        }}
+                      />
+                    )}
+                  </div>
                 </div>
-                <div style={{ fontSize: "10px", color: "#8492a6", textAlign: "center" }}>
-                  Placed at X: {Math.round(sigCoordinates.x)}% | Y: {Math.round(sigCoordinates.y)}% (Tap above to relocate)
+                <div className="text-[10px] text-ink-faint text-center">
+                  {signatureTransparentUrl ? "Tap the document again to move the signature" : "Draw a signature below, then tap the document to place it"}
                 </div>
               </div>
             )}
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#131622", padding: "10px 14px", borderRadius: "10px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <span style={{ fontSize: "11px", color: "#8492a6" }}>Pen Ink:</span>
+            <div className="flex justify-between items-center bg-surface-2 px-3.5 py-2.5 rounded-xl">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-ink-muted">Ink:</span>
                 {["#000000", "#002b80", "#008037"].map((c) => (
-                  <div
+                  <button
                     key={c}
                     onClick={() => setInkColor(c)}
-                    style={{
-                      width: "20px",
-                      height: "20px",
-                      borderRadius: "50%",
-                      backgroundColor: c,
-                      border: inkColor === c ? "2px solid #00e5ff" : "1px solid #475569",
-                      cursor: "pointer"
-                    }}
+                    className="w-5 h-5 rounded-full"
+                    style={{ backgroundColor: c, border: inkColor === c ? "2px solid var(--color-cyan)" : "1px solid #475569" }}
                   />
                 ))}
               </div>
 
-              <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#f8fafc", cursor: "pointer" }}>
+              <label className="flex items-center gap-1.5 text-[11px] text-ink cursor-pointer">
                 <input
                   type="checkbox"
                   checked={attachSecuritySeal}
@@ -1674,18 +1531,18 @@ export default function ClearfileApexEngine() {
                     setAttachSecuritySeal(e.target.checked);
                     setTimeout(() => endDrawingSignature(), 50);
                   }}
-                  style={{ accentColor: "#00e5ff" }}
+                  className="accent-cyan"
                 />
-                Cryptographic Seal
+                Add verification stamp
               </label>
             </div>
 
-            <div style={{ borderTop: "1px solid #1c2030", paddingTop: "12px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                <span style={{ fontSize: "11px", color: "#8492a6" }}>Draw Handwritten Signature:</span>
-                <span style={{ fontSize: "11px", color: "#ef4444", cursor: "pointer" }} onClick={clearSignaturePad}>Clear</span>
+            <div className="border-t border-line pt-3">
+              <div className="flex justify-between items-center mb-1.5">
+                <span className="text-[11px] text-ink-muted">Draw your signature:</span>
+                <button className="text-[11px] text-red" onClick={clearSignaturePad}>Clear</button>
               </div>
-              <div style={{ width: "100%", height: "130px", backgroundColor: "#ffffff", borderRadius: "10px", border: "1px dashed #222638", overflow: "hidden" }}>
+              <div className="w-full h-[130px] bg-white rounded-xl border border-dashed border-line overflow-hidden">
                 <canvas
                   ref={sigCanvasRef}
                   width={380}
@@ -1696,70 +1553,46 @@ export default function ClearfileApexEngine() {
                   onTouchStart={startDrawingSignature}
                   onTouchMove={moveDrawingSignature}
                   onTouchEnd={endDrawingSignature}
-                  style={{ width: "100%", height: "100%", touchAction: "none" }}
+                  className="w-full h-full touch-none"
                 />
               </div>
             </div>
 
             {docToSignBytes && signatureTransparentUrl && (
-              <button
-                onClick={burnSignatureAndSaveDocument}
-                style={{
-                  padding: "14px",
-                  borderRadius: "12px",
-                  background: "#00e5ff",
-                  color: "#050608",
-                  fontWeight: "bold",
-                  border: "none",
-                  fontSize: "12px",
-                  textTransform: "uppercase"
-                }}
-              >
-                Sign & Save Document to Phone 💾
-              </button>
+              <Button onClick={burnSignatureAndSaveDocument}>Sign &amp; save to device</Button>
             )}
           </div>
         )}
 
         {/* TOOL 3: COMPRESSOR */}
         {activeTool === "compress" && (
-          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
-            <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
-              Target File Compression Engine
-            </div>
+          <div className="gc-screen rounded-[20px] border border-line bg-surface shadow-[0_10px_30px_-6px_rgba(0,0,0,0.45)] p-4.5 flex flex-col gap-3.5">
+            <ToolTitle>Compress Files</ToolTitle>
 
             {compFiles.length === 0 ? (
-              <label style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                border: "2px dashed #262b3d",
-                borderRadius: "14px",
-                padding: "36px 16px",
-                cursor: "pointer",
-                backgroundColor: "#111420"
-              }}>
-                <div style={{ color: "#00d4ff", marginBottom: "8px" }}><Icons.Compress /></div>
-                <span style={{ fontSize: "14px", fontWeight: "600" }}>Select Any File (Images, PDF, Documents)</span>
-                <span style={{ fontSize: "10px", color: "#8492a6", marginTop: "4px" }}>Optimizes images, PDF streams, or archives</span>
-                <input type="file" multiple onChange={handlePickCompressFiles} style={{ display: "none" }} />
-              </label>
+              <UploadDropzone
+                icon={<Icons.Compress />}
+                title="Choose a file to compress"
+                subtitle="Images, PDFs, and other documents"
+              >
+                <input type="file" multiple onChange={handlePickCompressFiles} className="hidden" />
+              </UploadDropzone>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", background: "#131622", padding: "10px", borderRadius: "8px" }}>
-                  <div>
-                    <div style={{ fontSize: "12px", fontWeight: "600" }}>{compFiles[0].name}</div>
-                    <div style={{ fontSize: "11px", color: "#00e5ff" }}>Original: {formatBytes(compFiles[0].size)}</div>
+              <div className="flex flex-col gap-3.5">
+                <div className="flex justify-between bg-surface-2 p-2.5 rounded-lg">
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold truncate">{compFiles[0].name}</div>
+                    <div className="text-[11px] text-cyan">Original: {formatBytes(compFiles[0].size)}</div>
                   </div>
-                  <label style={{ fontSize: "11px", color: "#8492a6", cursor: "pointer" }}>
+                  <label className="text-[11px] text-ink-muted cursor-pointer shrink-0 ml-2">
                     Change
-                    <input type="file" multiple onChange={handlePickCompressFiles} style={{ display: "none" }} />
+                    <input type="file" multiple onChange={handlePickCompressFiles} className="hidden" />
                   </label>
                 </div>
 
-                <div style={{ background: "#131622", padding: "14px", borderRadius: "12px", border: "1px solid #202434" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                    <span style={{ fontSize: "11px", color: "#8492a6" }}>Target Size (KB):</span>
+                <div className="bg-surface-2 p-3.5 rounded-xl border border-line">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-[11px] text-ink-muted">Target size (KB):</span>
                     <input
                       type="number"
                       value={customKBInput}
@@ -1767,369 +1600,197 @@ export default function ClearfileApexEngine() {
                         setCustomKBInput(e.target.value);
                         if (Number(e.target.value) > 0) setTargetSizeKB(Number(e.target.value));
                       }}
-                      style={{
-                        width: "100px",
-                        backgroundColor: "#080a10",
-                        border: "1px solid #293046",
-                        borderRadius: "6px",
-                        padding: "6px 8px",
-                        fontSize: "13px",
-                        textAlign: "right",
-                        color: "#00e5ff",
-                        fontWeight: "bold"
-                      }}
+                      className="w-24 bg-bg-deep border border-line-glow rounded-md px-2 py-1.5 text-[13px] text-right text-cyan font-bold"
                     />
                   </div>
 
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px" }}>
+                  <div className="grid grid-cols-4 gap-2">
                     {[50, 100, 200, 500].map((kb) => (
-                      <button
-                        key={kb}
-                        onClick={() => { setTargetSizeKB(kb); setCustomKBInput(kb.toString()); }}
-                        style={{
-                          padding: "6px 0",
-                          borderRadius: "6px",
-                          border: targetSizeKB === kb ? "1px solid #00e5ff" : "1px solid #202434",
-                          background: targetSizeKB === kb ? "rgba(0, 212, 255, 0.15)" : "#161a28",
-                          color: targetSizeKB === kb ? "#00e5ff" : "#8492a6",
-                          fontSize: "11px"
-                        }}
-                      >
+                      <Chip key={kb} active={targetSizeKB === kb} onClick={() => { setTargetSizeKB(kb); setCustomKBInput(kb.toString()); }}>
                         {kb} KB
-                      </button>
+                      </Chip>
                     ))}
                   </div>
                 </div>
 
-                <button
-                  onClick={executeUniversalCompression}
-                  disabled={isCompressing}
-                  style={{
-                    padding: "14px",
-                    borderRadius: "12px",
-                    background: "#00e5ff",
-                    color: "#050608",
-                    fontSize: "13px",
-                    fontWeight: "bold",
-                    border: "none"
-                  }}
-                >
-                  {isCompressing ? "Compressing..." : `Compress File(s)`}
-                </button>
+                <Button onClick={executeUniversalCompression} disabled={isCompressing}>
+                  {isCompressing ? "Compressing…" : "Compress file(s)"}
+                </Button>
               </div>
             )}
 
             {compressedResult && (
-              <div style={{ background: "#131622", border: "1px solid rgba(16,185,129,0.4)", borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                <div style={{ fontSize: "12px", color: "#10b981", fontWeight: "bold" }}>
-                  ✓ Compressed to {formatBytes(compressedResult.size)} (Reduced by {(((compressedResult.origSize - compressedResult.size) / compressedResult.origSize) * 100).toFixed(0)}%)
+              <ResultBanner tone="success">
+                <div className="text-xs font-bold">
+                  Compressed to {formatBytes(compressedResult.size)} — {(((compressedResult.origSize - compressedResult.size) / compressedResult.origSize) * 100).toFixed(0)}% smaller
                 </div>
-                <button
-                  onClick={() => exportFileToDevice(compressedResult.dataUrl, `compressed-${compressedResult.name}`)}
-                  style={{
-                    padding: "12px",
-                    borderRadius: "10px",
-                    background: "#161a28",
-                    border: "1px solid #00e5ff",
-                    color: "#00e5ff",
-                    fontSize: "12px",
-                    fontWeight: "bold"
-                  }}
-                >
-                  Save Compressed File to Phone 💾
-                </button>
-              </div>
+                <Button variant="secondary" onClick={() => exportFileToDevice(compressedResult.dataUrl, `compressed-${compressedResult.name}`)} className="border-cyan/40 text-cyan">
+                  Save to device
+                </Button>
+              </ResultBanner>
             )}
           </div>
         )}
 
         {/* TOOL 6: PHOTO ENHANCER */}
         {activeTool === "enhance" && (
-          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
-            <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
-              Sharpen, Denoise &amp; Auto-Color Correct
-            </div>
+          <div className="gc-screen rounded-[20px] border border-line bg-surface shadow-[0_10px_30px_-6px_rgba(0,0,0,0.45)] p-4.5 flex flex-col gap-3.5">
+            <ToolTitle>Enhance Photo</ToolTitle>
 
             {!enhanceSourceFile ? (
-              <label style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                border: "2px dashed #262b3d",
-                borderRadius: "14px",
-                padding: "36px 16px",
-                cursor: "pointer",
-                backgroundColor: "#111420"
-              }}>
-                <div style={{ color: "#00d4ff", marginBottom: "8px" }}><Icons.Enhance /></div>
-                <span style={{ fontSize: "14px", fontWeight: "600" }}>Select Photo to Enhance</span>
-                <span style={{ fontSize: "10px", color: "#8492a6", marginTop: "4px" }}>JPG, PNG, or WEBP</span>
-                <input type="file" accept="image/*" onChange={handlePickEnhanceFile} style={{ display: "none" }} />
-              </label>
+              <UploadDropzone icon={<Icons.Enhance />} title="Select a photo to enhance" subtitle="JPG, PNG, or WEBP">
+                <input type="file" accept="image/*" onChange={handlePickEnhanceFile} className="hidden" />
+              </UploadDropzone>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-                <img
-                  src={enhanceResultUrl || enhanceSourcePreview}
-                  alt="Enhance preview"
-                  style={{ width: "100%", height: "220px", objectFit: "contain", borderRadius: "12px", backgroundColor: "#000" }}
-                />
+              <div className="flex flex-col gap-3.5">
+                <div className="relative">
+                  <img
+                    src={enhanceResultUrl || enhanceSourcePreview}
+                    alt="Enhance preview"
+                    className="w-full h-[220px] object-contain rounded-xl bg-black"
+                  />
+                  <span className="absolute top-2 left-2 text-[9.5px] font-bold uppercase tracking-wide px-2 py-1 rounded-full bg-black/60 backdrop-blur-sm text-ink">
+                    {enhanceResultUrl ? "Enhanced" : "Original"}
+                  </span>
+                </div>
 
-                <div style={{ background: "#131622", padding: "14px", borderRadius: "12px", border: "1px solid #202434" }}>
-                  <span style={{ fontSize: "11px", color: "#8492a6" }}>Enhancement strength:</span>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "8px", marginTop: "8px" }}>
+                <div className="bg-surface-2 p-3.5 rounded-xl border border-line">
+                  <span className="text-[11px] text-ink-muted">Enhancement strength:</span>
+                  <div className="grid grid-cols-3 gap-2 mt-2">
                     {Object.entries(ENHANCE_LEVELS).map(([key, cfg]) => (
-                      <button
-                        key={key}
-                        onClick={() => setEnhanceLevel(key)}
-                        style={{
-                          padding: "8px 0",
-                          borderRadius: "6px",
-                          border: enhanceLevel === key ? "1px solid #00e5ff" : "1px solid #202434",
-                          background: enhanceLevel === key ? "rgba(0, 212, 255, 0.15)" : "#161a28",
-                          color: enhanceLevel === key ? "#00e5ff" : "#8492a6",
-                          fontSize: "11px",
-                          fontWeight: "bold"
-                        }}
-                      >
+                      <Chip key={key} active={enhanceLevel === key} onClick={() => setEnhanceLevel(key)}>
                         {cfg.label}
-                      </button>
+                      </Chip>
                     ))}
                   </div>
                 </div>
 
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <label style={{ fontSize: "11px", color: "#8492a6", cursor: "pointer" }}>
-                    Change Photo
-                    <input type="file" accept="image/*" onChange={handlePickEnhanceFile} style={{ display: "none" }} />
-                  </label>
-                </div>
+                <label className="text-[11px] text-ink-muted cursor-pointer self-start">
+                  Change photo
+                  <input type="file" accept="image/*" onChange={handlePickEnhanceFile} className="hidden" />
+                </label>
 
-                <button
-                  onClick={runPhotoEnhance}
-                  disabled={isEnhancing}
-                  style={{
-                    padding: "14px",
-                    borderRadius: "12px",
-                    background: "#00e5ff",
-                    color: "#050608",
-                    fontSize: "13px",
-                    fontWeight: "bold",
-                    border: "none"
-                  }}
-                >
-                  {isEnhancing ? "Enhancing..." : "Enhance Photo"}
-                </button>
+                <Button onClick={runPhotoEnhance} disabled={isEnhancing}>
+                  {isEnhancing ? "Enhancing…" : "Enhance photo"}
+                </Button>
               </div>
             )}
 
             {enhanceResultUrl && (
-              <div style={{ background: "#131622", border: "1px solid rgba(16,185,129,0.4)", borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
-                <div style={{ fontSize: "12px", color: "#10b981", fontWeight: "bold" }}>
-                  ✓ Enhanced! Sharpened, denoised, and contrast auto-corrected.
-                </div>
-                <button
-                  onClick={() => exportFileToDevice(enhanceResultUrl, `enhanced-${enhanceSourceFile.name}`)}
-                  style={{
-                    padding: "12px",
-                    borderRadius: "10px",
-                    background: "#161a28",
-                    border: "1px solid #00e5ff",
-                    color: "#00e5ff",
-                    fontSize: "12px",
-                    fontWeight: "bold"
-                  }}
-                >
-                  Save Enhanced Photo to Phone 💾
-                </button>
-              </div>
+              <ResultBanner tone="success">
+                <div className="text-xs font-bold">Enhanced — sharpened, denoised, and color-corrected</div>
+                <Button variant="secondary" onClick={() => exportFileToDevice(enhanceResultUrl, `enhanced-${enhanceSourceFile.name}`)} className="border-cyan/40 text-cyan">
+                  Save to device
+                </Button>
+              </ResultBanner>
             )}
           </div>
         )}
 
         {/* TOOL 4: UNIVERSAL CONVERTER */}
         {activeTool === "convert" && (
-          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
-            <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
-              Universal Any-to-Any Converter
-            </div>
+          <div className="gc-screen rounded-[20px] border border-line bg-surface shadow-[0_10px_30px_-6px_rgba(0,0,0,0.45)] p-4.5 flex flex-col gap-3.5">
+            <ToolTitle>Convert Files</ToolTitle>
 
-            <label style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              border: "2px dashed #262b3d",
-              borderRadius: "14px",
-              padding: "28px 16px",
-              cursor: "pointer",
-              backgroundColor: "#111420"
-            }}>
-              <div style={{ color: "#00d4ff", marginBottom: "6px" }}><Icons.Convert /></div>
-              <span style={{ fontSize: "13px", fontWeight: "600" }}>
-                {convFiles.length > 0 ? `${convFiles.length} file(s) selected` : "Select Files to Convert"}
-              </span>
-              <input type="file" multiple onChange={handlePickConvertFiles} style={{ display: "none" }} />
-            </label>
+            <UploadDropzone
+              icon={<Icons.Convert />}
+              title={convFiles.length > 0 ? `${convFiles.length} file(s) selected` : "Select files to convert"}
+            >
+              <input type="file" multiple onChange={handlePickConvertFiles} className="hidden" />
+            </UploadDropzone>
 
             <div>
-              <span style={{ fontSize: "11px", color: "#8492a6" }}>Target Format:</span>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "8px", marginTop: "6px" }}>
+              <span className="text-[11px] text-ink-muted">Target format:</span>
+              <div className="grid grid-cols-4 gap-2 mt-1.5">
                 {["pdf", "png", "webp", "jpeg"].map((fmt) => (
-                  <button
-                    key={fmt}
-                    onClick={() => setTargetFormat(fmt)}
-                    style={{
-                      padding: "8px 0",
-                      borderRadius: "6px",
-                      border: targetFormat === fmt ? "1px solid #00e5ff" : "1px solid #202434",
-                      background: targetFormat === fmt ? "rgba(0, 212, 255, 0.15)" : "#131622",
-                      color: targetFormat === fmt ? "#00e5ff" : "#8492a6",
-                      fontSize: "11px",
-                      fontWeight: "bold",
-                      textTransform: "uppercase"
-                    }}
-                  >
+                  <Chip key={fmt} active={targetFormat === fmt} onClick={() => setTargetFormat(fmt)} className="uppercase">
                     .{fmt}
-                  </button>
+                  </Chip>
                 ))}
               </div>
             </div>
 
             {convFiles.length > 0 && (
-              <button
-                onClick={executeUniversalConversion}
-                disabled={isConverting}
-                style={{
-                  padding: "14px",
-                  borderRadius: "12px",
-                  background: "#00e5ff",
-                  color: "#050608",
-                  fontSize: "13px",
-                  fontWeight: "bold",
-                  border: "none"
-                }}
-              >
-                {isConverting ? "Converting..." : `Convert to .${targetFormat.toUpperCase()}`}
-              </button>
+              <Button onClick={executeUniversalConversion} disabled={isConverting}>
+                {isConverting ? "Converting…" : `Convert to .${targetFormat.toUpperCase()}`}
+              </Button>
             )}
 
             {conversionResult && (
-              <button
-                onClick={() => exportFileToDevice(conversionResult.dataUrl, conversionResult.name)}
-                style={{
-                  padding: "12px",
-                  borderRadius: "10px",
-                  background: "#151824",
-                  border: "1px solid #10b981",
-                  color: "#10b981",
-                  fontSize: "12px",
-                  fontWeight: "bold"
-                }}
-              >
-                Save Converted File ({conversionResult.name}) 💾
-              </button>
+              <ResultBanner tone="success">
+                <div className="text-xs font-bold truncate">Ready: {conversionResult.name}</div>
+                <Button variant="secondary" onClick={() => exportFileToDevice(conversionResult.dataUrl, conversionResult.name)} className="border-green/40 text-green">
+                  Save to device
+                </Button>
+              </ResultBanner>
             )}
           </div>
         )}
 
         {/* TOOL 5A: QR SCANNER (DECODE + LINK SAFETY CHECK) */}
         {activeTool === "qrscan" && (
-          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
-            <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
-              Continuous QR Scanner
-            </div>
+          <div className="gc-screen rounded-[20px] border border-line bg-surface shadow-[0_10px_30px_-6px_rgba(0,0,0,0.45)] p-4.5 flex flex-col gap-3.5">
+            <ToolTitle>Scan QR Code</ToolTitle>
 
-            <div style={{ position: "relative", width: "100%", height: "240px", backgroundColor: "#000", borderRadius: "12px", overflow: "hidden", border: "1px solid #202434" }}>
-              <video ref={qrVideoRef} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            <div className="relative w-full h-60 bg-black rounded-xl overflow-hidden border border-line">
+              <video ref={qrVideoRef} className="w-full h-full object-cover" />
               {isQrLiveActive && (
-                <div style={{ position: "absolute", inset: "30px", border: "2px solid rgba(0, 212, 255, 0.4)", borderRadius: "10px" }}>
-                  <div style={{ position: "absolute", left: 0, right: 0, height: "2px", background: "#00e5ff", boxShadow: "0 0 8px #00d4ff" }} className="laser-scanner" />
+                <div className="absolute inset-7 border-2 border-cyan/40 rounded-lg">
+                  <div className="absolute left-0 right-0 h-0.5 bg-cyan shadow-[0_0_8px_#00d4ff] laser-scanner" />
                 </div>
               )}
               {!isQrLiveActive && (
-                <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-                  <div style={{ color: "#00d4ff", marginBottom: "6px" }}><Icons.QR /></div>
-                  <span style={{ fontSize: "11px", color: "#8492a6" }}>Camera Sensor Idle</span>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <div className="text-cyan mb-1.5"><Icons.QR /></div>
+                  <span className="text-[11px] text-ink-muted">Camera is off</span>
                 </div>
               )}
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+            <div className="grid grid-cols-2 gap-2">
               {!isQrLiveActive ? (
-                <button
-                  onClick={startQrLiveScanning}
-                  style={{ padding: "12px", borderRadius: "10px", background: "#00e5ff", color: "#050608", fontWeight: "bold", border: "none", fontSize: "12px" }}
-                >
-                  Start Live Camera
-                </button>
+                <Button onClick={startQrLiveScanning}>Start camera</Button>
               ) : (
-                <button
-                  onClick={stopQrLiveScanning}
-                  style={{ padding: "12px", borderRadius: "10px", background: "#202434", color: "#fff", fontWeight: "bold", border: "none", fontSize: "12px" }}
-                >
-                  Stop Camera
-                </button>
+                <Button variant="secondary" onClick={stopQrLiveScanning}>Stop camera</Button>
               )}
-
-              <label style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: "12px",
-                borderRadius: "10px",
-                background: "#151824",
-                color: "#f8fafc",
-                border: "1px solid #222638",
-                fontSize: "12px",
-                fontWeight: "bold",
-                cursor: "pointer"
-              }}>
-                Scan Screenshot
-                <input type="file" accept="image/*" onChange={scanQrFromScreenshotPicker} style={{ display: "none" }} />
+              <label className="flex items-center justify-center rounded-xl bg-surface-2 border border-line-glow text-ink text-[13px] font-bold px-4 py-3 cursor-pointer text-center">
+                Scan screenshot
+                <input type="file" accept="image/*" onChange={scanQrFromScreenshotPicker} className="hidden" />
               </label>
             </div>
 
             {qrDecodedValue && (
-              <div style={{ background: "#131622", border: "1px solid #00e5ff", padding: "12px", borderRadius: "10px" }}>
-                <div style={{ fontSize: "10px", color: "#8492a6" }}>Detected Output:</div>
-                <div style={{ fontSize: "13px", color: "#00e5ff", fontWeight: "bold", wordBreak: "break-all", marginTop: "4px" }}>
-                  {qrDecodedValue}
-                </div>
+              <div className="bg-surface-2 border border-cyan/40 p-3 rounded-xl">
+                <div className="text-[10px] text-ink-muted">Scanned content</div>
+                <div className="text-[13px] text-cyan font-bold break-all mt-1">{qrDecodedValue}</div>
               </div>
             )}
 
             {qrPendingLink && (() => {
               const { risk } = qrPendingLink;
-              const palette = {
-                danger: { accent: "#ef4444", bg: "rgba(239,68,68,0.1)" },
-                caution: { accent: "#f59e0b", bg: "rgba(245,158,11,0.1)" },
-                safe: { accent: "#10b981", bg: "rgba(16,185,129,0.1)" },
-              }[risk.level];
+              const tone = risk.level === "danger" ? "danger" : risk.level === "caution" ? "caution" : "success";
+              const accentClass = risk.level === "danger" ? "text-red" : risk.level === "caution" ? "text-amber" : "text-green";
 
               return (
-                <div style={{ background: palette.bg, border: `1px solid ${palette.accent}`, borderRadius: "12px", padding: "14px", display: "flex", flexDirection: "column", gap: "10px" }}>
-                  <div style={{ fontSize: "11px", color: palette.accent, fontWeight: "bold", textTransform: "uppercase" }}>
+                <ResultBanner tone={tone}>
+                  <div className={`text-[11px] font-bold uppercase ${accentClass}`}>
                     {risk.level === "danger" ? "⚠ Potentially harmful link" : risk.level === "caution" ? "⚠ Use caution before opening" : "Link looks standard"}
                   </div>
                   {risk.reasons.length > 0 && (
-                    <ul style={{ margin: 0, paddingLeft: "18px", fontSize: "11px", color: "#c9d1e0", display: "flex", flexDirection: "column", gap: "4px" }}>
+                    <ul className="m-0 pl-4.5 text-[11px] text-ink-muted flex flex-col gap-1">
                       {risk.reasons.map((reason) => <li key={reason}>{reason}</li>)}
                     </ul>
                   )}
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
-                    <button
-                      onClick={dismissQrLink}
-                      style={{ padding: "10px", borderRadius: "8px", background: "#151824", border: "1px solid #2a314d", color: "#f8fafc", fontSize: "12px", fontWeight: "bold" }}
-                    >
-                      Cancel
-                    </button>
-                    <button
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button variant="secondary" onClick={dismissQrLink}>Cancel</Button>
+                    <Button
                       onClick={confirmOpenQrLink}
-                      style={{ padding: "10px", borderRadius: "8px", background: palette.accent, color: "#050608", fontWeight: "bold", border: "none", fontSize: "12px" }}
+                      style={risk.level !== "safe" ? { backgroundImage: "none", backgroundColor: risk.level === "danger" ? "var(--color-red)" : "var(--color-amber)" } : undefined}
                     >
-                      Open Link ↗
-                    </button>
+                      Open link ↗
+                    </Button>
                   </div>
-                </div>
+                </ResultBanner>
               );
             })()}
           </div>
@@ -2137,46 +1798,23 @@ export default function ClearfileApexEngine() {
 
         {/* TOOL 5B: QR GENERATOR */}
         {activeTool === "qrgen" && (
-          <div className="gc-card gc-screen" style={{ padding: "18px", display: "flex", flexDirection: "column", gap: "14px" }}>
-            <div style={{ fontSize: "12px", color: "#00e5ff", fontWeight: "bold", letterSpacing: "1px", textTransform: "uppercase" }}>
-              QR Code Creator
-            </div>
+          <div className="gc-screen rounded-[20px] border border-line bg-surface shadow-[0_10px_30px_-6px_rgba(0,0,0,0.45)] p-4.5 flex flex-col gap-3.5">
+            <ToolTitle>Create QR Code</ToolTitle>
 
             <div>
-              <span style={{ fontSize: "11px", color: "#8492a6" }}>Text or Link:</span>
+              <span className="text-[11px] text-ink-muted">Text or link:</span>
               <input
                 type="text"
                 value={qrTextToGenerate}
                 onChange={(e) => setQrTextToGenerate(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "10px",
-                  borderRadius: "8px",
-                  background: "#131622",
-                  border: "1px solid #202434",
-                  margin: "8px 0",
-                  fontSize: "12px"
-                }}
+                className="w-full px-2.5 py-2.5 rounded-lg bg-surface-2 border border-line my-2 text-xs"
               />
               {generatedQrCodeUrl && (
-                <div style={{ textAlign: "center" }}>
-                  <img src={generatedQrCodeUrl} alt="QR" style={{ width: "160px", height: "160px", borderRadius: "8px" }} />
-                  <button
-                    onClick={() => exportFileToDevice(generatedQrCodeUrl, "Clearfile-QR.png")}
-                    style={{
-                      width: "100%",
-                      padding: "10px",
-                      borderRadius: "8px",
-                      background: "#00e5ff",
-                      color: "#050608",
-                      fontWeight: "bold",
-                      border: "none",
-                      marginTop: "10px",
-                      fontSize: "12px"
-                    }}
-                  >
-                    Save QR Image to Phone 💾
-                  </button>
+                <div className="text-center flex flex-col gap-2.5 items-center">
+                  <img src={generatedQrCodeUrl} alt="QR" className="w-40 h-40 rounded-lg" />
+                  <Button onClick={() => exportFileToDevice(generatedQrCodeUrl, "Clearfile-QR.png")} className="w-full">
+                    Save to device
+                  </Button>
                 </div>
               )}
             </div>
@@ -2186,20 +1824,7 @@ export default function ClearfileApexEngine() {
       </main>
 
       {/* 4. FIXED BOTTOM NAVIGATION DOCK */}
-      <footer
-        className="no-scrollbar"
-        style={{
-          flexShrink: 0,
-          backgroundColor: "rgba(15,18,25,0.92)",
-          backdropFilter: "blur(10px)",
-          borderTop: "1px solid var(--border-line)",
-          display: "flex",
-          overflowX: "auto",
-          alignItems: "center",
-          gap: "2px",
-          padding: "8px 8px 14px 8px"
-        }}
-      >
+      <footer className="no-scrollbar shrink-0 bg-[#0f1219]/92 backdrop-blur-md border-t border-line flex overflow-x-auto items-center gap-0.5 px-2 pt-2 pb-3.5">
         {TOOLS.map((tab) => {
           const isActive = activeTool === tab.id;
           const IconComp = tab.icon;
@@ -2214,23 +1839,16 @@ export default function ClearfileApexEngine() {
                 }
                 setActiveTool(tab.id);
               }}
-              style={{
-                flex: "0 0 auto",
-                minWidth: "64px",
-                background: isActive ? hexToRgba(tab.accent, 0.12) : "transparent",
-                border: "none",
-                borderRadius: "var(--radius-md)",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: "4px",
-                padding: "6px 8px"
-              }}
+              className="flex-none min-w-16 rounded-xl flex flex-col items-center gap-1 py-1.5 px-2"
+              style={{ background: isActive ? hexToRgba(tab.accent, 0.12) : "transparent" }}
             >
-              <div style={{ color: isActive ? tab.accent : "var(--text-muted)" }}>
+              <div style={{ color: isActive ? tab.accent : "var(--color-ink-muted)" }}>
                 <IconComp />
               </div>
-              <span style={{ fontSize: "9.5px", fontWeight: isActive ? "800" : "600", color: isActive ? tab.accent : "var(--text-muted)", whiteSpace: "nowrap" }}>
+              <span
+                className="text-[9.5px] whitespace-nowrap"
+                style={{ fontWeight: isActive ? 800 : 600, color: isActive ? tab.accent : "var(--color-ink-muted)" }}
+              >
                 {tab.dockLabel}
               </span>
             </button>

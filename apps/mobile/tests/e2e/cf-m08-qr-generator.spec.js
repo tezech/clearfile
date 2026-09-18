@@ -12,7 +12,7 @@ test("CF-M08: typed text regenerates a branded QR preview and saves it", async (
   await expect(previewImg).toBeVisible({ timeout: 10_000 }); // default text already renders one
   const defaultSrc = await previewImg.getAttribute("src");
 
-  const genInput = page.locator("text=Text or Link:").locator("xpath=following-sibling::input[1]");
+  const genInput = page.locator("text=Text or link:").locator("xpath=following-sibling::input[1]");
   await genInput.fill("");
   await genInput.fill("https://clearfile.app/cf-m08-qa");
 
@@ -42,6 +42,6 @@ test("CF-M08: typed text regenerates a branded QR preview and saves it", async (
   });
   expect(paletteOk, "QR preview should use the #00e5ff cyan / #050608 dark palette").toBe(true);
 
-  await page.getByText("Save QR Image to Phone", { exact: false }).click();
+  await page.getByText("Save to device", { exact: false }).click();
   await expect(page.getByText(/Saved to Documents! Opening share sheet/)).toBeVisible({ timeout: 15_000 });
 });

@@ -1,5 +1,5 @@
 // CF-M02: Hardware Scanner
-// Tap "Doc Scanner", grant camera permission, frame page, click "SNAP DOCUMENT".
+// Tap "Doc Scanner", grant camera permission, frame page, click "Capture".
 // Expected: camera viewfinder opens without freezing; captures frame;
 // transitions directly to crop screen.
 const { test, expect, APP_ID } = require("../support/android-app");
@@ -13,8 +13,8 @@ test.beforeEach(async ({ device }) => {
 
 test("CF-M02: camera opens, captures a frame, and lands on the crop screen", async ({ appPage: page }) => {
   await page.locator("main").getByText("Doc Scanner").click();
-  await page.getByText("Open Camera Viewfinder").click();
-  await expect(page.getByText("SNAP DOCUMENT")).toBeVisible({ timeout: 10_000 });
+  await page.getByText("Open camera", { exact: true }).click();
+  await expect(page.getByText("Capture", { exact: true })).toBeVisible({ timeout: 10_000 });
 
   // Viewfinder is live: the <video> element has an active MediaStream and is
   // actually decoding frames (readyState/videoWidth are 0 until it is).
@@ -26,12 +26,12 @@ test("CF-M02: camera opens, captures a frame, and lands on the crop screen", asy
     { timeout: 10_000 }
   );
 
-  await page.getByText("SNAP DOCUMENT").click();
+  await page.getByText("Capture", { exact: true }).click();
 
   // Direct transition to the crop / 4-corner screen — no intermediate spinner
   // stuck on the viewfinder, and the camera stream is torn down.
-  await expect(page.getByText(/Magic Color/)).toBeVisible({ timeout: 5000 });
-  await expect(page.getByText(/Crisp B&W/)).toBeVisible();
+  await expect(page.locator("main").getByText("Enhance", { exact: true })).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText("Black & White", { exact: true })).toBeVisible();
 
   const streamActive = await page.evaluate(() => {
     const video = document.querySelector("video");
@@ -50,7 +50,7 @@ test("CF-M02: camera failure falls back to a gallery-photo prompt instead of fre
   });
   await page.reload();
   await page.locator("main").getByText("Doc Scanner").click();
-  await page.getByText("Open Camera Viewfinder").click();
+  await page.getByText("Open camera", { exact: true }).click();
 
   await expect(page.getByText(/Camera unavailable\. Select document photo from gallery\./)).toBeVisible({
     timeout: 10_000,
