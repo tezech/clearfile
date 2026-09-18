@@ -5,14 +5,14 @@
 const { test, expect } = require("../support/android-app");
 
 test("CF-M08: typed text regenerates a branded QR preview and saves it", async ({ appPage: page }) => {
-  await page.locator("main").getByText("QR Utility").click();
-  await expect(page.getByText("Generate QR Code:")).toBeVisible({ timeout: 10_000 });
+  await page.locator("main").getByText("Create QR").click();
+  await expect(page.getByText("QR Code Creator")).toBeVisible({ timeout: 10_000 });
 
   const previewImg = page.locator('img[alt="QR"]');
   await expect(previewImg).toBeVisible({ timeout: 10_000 }); // default text already renders one
   const defaultSrc = await previewImg.getAttribute("src");
 
-  const genInput = page.locator("text=Generate QR Code:").locator("xpath=following-sibling::input[1]");
+  const genInput = page.locator("text=Text or Link:").locator("xpath=following-sibling::input[1]");
   await genInput.fill("");
   await genInput.fill("https://clearfile.app/cf-m08-qa");
 

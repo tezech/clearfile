@@ -8,9 +8,11 @@ const { createOversizedImageFile } = require("../support/fixtures");
 
 test("CF-W03: oversized PNG upload is compressed and downloads smaller", async ({ page }) => {
   // WASM/web-worker compression of a multi-MB image can be slow under CPU
-  // contention when the suite runs with several parallel workers; give this
-  // one more headroom than the default 30s so contention doesn't flake it.
-  test.setTimeout(60_000);
+  // contention when the suite runs with several parallel workers, and this
+  // fixture's synthetic per-pixel noise is worst-case-adversarial for a
+  // JPEG encoder (measured 17-37s at Extreme quality alone) — give this
+  // generous headroom so contention/slow runs don't flake it.
+  test.setTimeout(90_000);
   const originalPath = createOversizedImageFile(3 * 1024 * 1024);
   const originalSize = fs.statSync(originalPath).size;
   expect(originalSize).toBeGreaterThan(2 * 1024 * 1024);
@@ -26,7 +28,7 @@ test("CF-W03: oversized PNG upload is compressed and downloads smaller", async (
   await page.getByRole("button", { name: "Compress", exact: true }).click();
 
   await expect(page.getByText("Compressing your image")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Get Compressed Image" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "Get Compressed Image" })).toBeVisible({ timeout: 60_000 });
 
   const originalLabel = await page.locator("text=Original").locator("xpath=following-sibling::p").innerText();
   const compressedLabel = await page.locator("text=Compressed").locator("xpath=following-sibling::p").innerText();

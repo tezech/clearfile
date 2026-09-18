@@ -1,20 +1,29 @@
 // CF-M09: Bottom Dock Routing
-// Tap each dock icon (Scanner, Sign, Compress, Enhance, Convert, QR).
-// Expected: active tab indicator updates; previous media streams stop;
-// view renders without frozen DOM states.
+// Tap each dock icon (Scan, Sign, Compress, Enhance, Convert, Scan QR,
+// Create QR). Expected: active tab indicator updates; previous media
+// streams stop; view renders without frozen DOM states.
+//
+// The dock now holds 7 tools (QR was split into separate Scan/Create
+// tiles) and is horizontally scrollable, each tool uses its own accent
+// color for its active state (not a single fixed cyan), and the footer
+// shows a short dockLabel while the dashboard above shows the full label
+// — e.g. "Scan" in the dock vs. "Doc Scanner" on the dashboard card.
 const { test, expect } = require("../support/android-app");
 const { mockCameraFeedWithImage } = require("../support/camera-mock");
 
 const TINY_PNG_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
+const INACTIVE_RGB = "rgb(139, 150, 171)";
+
 const DOCK_TABS = [
-  { label: "Doc Scanner", badge: "SCAN", contentText: "Homography Perspective Document Scanner" },
-  { label: "Sign Document", badge: "SIGN", contentText: "Transparent Signature on Live Document" },
-  { label: "Compress Files", badge: "COMPRESS", contentText: "Target File Compression Engine" },
-  { label: "Enhance Photo", badge: "ENHANCE", contentText: "Sharpen, Denoise & Auto-Color Correct" },
-  { label: "Convert Formats", badge: "CONVERT", contentText: "Universal Any-to-Any Converter" },
-  { label: "QR Utility", badge: "QR", contentText: "Continuous QR Scanner & Creator" },
+  { dockLabel: "Scan", badge: "SCAN", accentRgb: "rgb(0, 229, 255)", contentText: "Homography Perspective Document Scanner" },
+  { dockLabel: "Sign", badge: "SIGN", accentRgb: "rgb(124, 92, 255)", contentText: "Transparent Signature on Live Document" },
+  { dockLabel: "Compress", badge: "COMPRESS", accentRgb: "rgb(16, 185, 129)", contentText: "Target File Compression Engine" },
+  { dockLabel: "Enhance", badge: "ENHANCE", accentRgb: "rgb(245, 158, 11)", contentText: "Sharpen, Denoise & Auto-Color Correct" },
+  { dockLabel: "Convert", badge: "CONVERT", accentRgb: "rgb(79, 184, 255)", contentText: "Universal Any-to-Any Converter" },
+  { dockLabel: "Scan QR", badge: "QR SCAN", accentRgb: "rgb(0, 229, 255)", contentText: "Continuous QR Scanner" },
+  { dockLabel: "Create QR", badge: "QR CREATE", accentRgb: "rgb(244, 114, 182)", contentText: "QR Code Creator" },
 ];
 
 test("CF-M09: each dock tab updates the active indicator and renders its own view", async ({ appPage: page }) => {
@@ -22,18 +31,18 @@ test("CF-M09: each dock tab updates the active indicator and renders its own vie
   const header = page.locator("header");
 
   for (const tab of DOCK_TABS) {
-    await footer.getByText(tab.label).click();
+    await footer.getByText(tab.dockLabel, { exact: true }).click();
 
     // Header badge reflects the active tool.
     await expect(header.getByText(tab.badge, { exact: true })).toBeVisible();
 
-    // The tapped tab's label is the only one painted the active cyan.
-    const activeLabel = footer.getByText(tab.label, { exact: true });
-    await expect(activeLabel).toHaveCSS("color", "rgb(0, 229, 255)");
+    // The tapped tab's label is painted in that tool's own accent color.
+    const activeLabel = footer.getByText(tab.dockLabel, { exact: true });
+    await expect(activeLabel).toHaveCSS("color", tab.accentRgb);
 
     for (const other of DOCK_TABS) {
-      if (other.label === tab.label) continue;
-      await expect(footer.getByText(other.label, { exact: true })).toHaveCSS("color", "rgb(132, 146, 166)");
+      if (other.dockLabel === tab.dockLabel) continue;
+      await expect(footer.getByText(other.dockLabel, { exact: true })).toHaveCSS("color", INACTIVE_RGB);
     }
 
     await expect(page.getByText(tab.contentText)).toBeVisible();
@@ -45,7 +54,7 @@ test("CF-M09: switching away from Doc Scanner stops its camera stream", async ({
   await page.reload();
 
   const footer = page.locator("footer");
-  await footer.getByText("Doc Scanner").click();
+  await footer.getByText("Scan", { exact: true }).click();
   await page.getByText("Open Camera Viewfinder").click();
   await expect(page.getByText("SNAP DOCUMENT")).toBeVisible({ timeout: 10_000 });
 
@@ -54,7 +63,7 @@ test("CF-M09: switching away from Doc Scanner stops its camera stream", async ({
   );
   expect(streamLiveBefore).toBe(true);
 
-  await footer.getByText("Sign Document").click();
+  await footer.getByText("Sign", { exact: true }).click();
   await expect(page.getByText("Transparent Signature on Live Document")).toBeVisible();
 
   const streamStoppedAfter = await page.evaluate(
